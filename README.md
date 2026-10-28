@@ -1,41 +1,23 @@
-# Cabrotona USA — actualización online v3: CPU sólidos + carrera en segundo plano
+# Cabrotona USA Online v3 — FPS/restauración del primer plano
 
-Actualización incremental sobre la edición **Online Concurrente v2**. Conserva las salas, el cronómetro global, LISTO, la largada de "Gentlemen, start your engines", las identidades de los 8 pilotos y el ranking en vivo.
+Esta versión **quita completamente** el cambio de segundo plano de la v3 anterior que provocaba lag.
+La física vuelve a actualizarse exclusivamente con el bucle habitual `requestAnimationFrame`, como en Online Concurrente v2. No hay un segundo timer de simulación, ni autopiloto por pestaña oculta, ni progreso ficticio desde el servidor.
 
-## Cambios
+## Se conservan las correcciones de los CPU
+- CPU opcionales violetas usando la **carrocería NPC original** y las texturas violetas, no Gallop ni rivales NPC multicolor.
+- Al activar CPU, completan hasta 20 autos sumando los jugadores reales; no cuentan en la clasificación.
+- Los CPU chocan con el auto propio: no pueden atravesarse. Los CPU cercanos se separan entre sí.
+- Al salir de multijugador, los autos NPC originales restauran sus colores.
+- Siguen el reloj global compartido, sistema LISTO, largada sincronizada y ranking transparente del Online Concurrente v2.
 
-### El juego continúa con la pestaña en segundo plano
-- La simulación ya **no depende de `requestAnimationFrame`**: éste sólo dibuja. La física corre con un temporizador independiente y pasos de 1/60 s.
-- Cuando la pestaña está oculta, el auto propio usa un piloto automático moderado hasta que vuelvan los controles, en lugar de frenar por la pérdida de foco.
-- Si el navegador limita/suspende incluso los temporizadores, **el servidor continúa el reloj global** y mantiene avanzando el auto del piloto que no transmite durante más de 1,5 segundos. Al volver, su posición se resincroniza y un paquete viejo no puede hacer retroceder el auto.
-- Si se **cierra** la pestaña, se desconecta la conexión WebSocket y se abandona la sala. Los navegadores móviles pueden suspender la red al bloquear el teléfono: no puede garantizarse funcionamiento indefinido en segundo plano.
+## Importante sobre pestañas en segundo plano
+Con el retroceso solicitado, la **simulación local se ralentiza o pausa cuando el navegador suspende la pestaña**, como antes. El reloj global del servidor y la partida de los demás jugadores que tengan el juego activo continúan.
 
-### NPC violetas (sin NPC de otros colores)
-- Con CPU apagados, no aparecen autos NPC en carrera multijugador.
-- Con CPU encendidos, los autos controlados por computadora completan la parrilla hasta **20 autos incluyendo humanos**.
-- Ahora todos los CPU usan el **modelo 3D original de NPC** (no el Gallop de los humanos) con **carrocería, techo, vinilos y detalles violetas**.
-- Los rivales humanos conservan sus Gallop con sus colores y números de asiento.
-- Se restaura la pintura NPC original al abandonar multiplayer; el modo individual no queda pintado de violeta.
+## Publicar
 
-### Colisiones
-- Los CPU tienen **colisión contra el jugador humano**; ya no son hologramas atravesables. Hay choque frontal/trasero y roces laterales.
-- Los CPU evitan superponerse unos con otros cuando circulan próximos en el mismo carril.
-- Un piloto que continúa por el servidor estando inactivo también puede verse detenido detrás de un CPU.
-
-## Actualizar GitHub y Render
-
-1. Descomprimí este ZIP y subí los seis archivos de su raíz a **NicolasAnzevino/Cabrotona-USA**, rama `main`, **reemplazando los anteriores**: `index.html`, `multiplayer.js`, `server.py`, `requirements.txt`, `render.yaml` y `README.md`.
-2. Hacé **Commit changes**. Render tiene configurado despliegue automático desde `main`.
-3. Mirá **Events** en tu Web Service hasta que aparezca `Live`. Recargá la URL con Ctrl+Shift+R para evitar caché.
-4. Prueba recomendada: dos dispositivos en la misma sala, CPU habilitados, contacto con un NPC violeta; luego dejar una ventana en segundo plano y comprobar que ambos siguen avanzando y que el tiempo de sala no se congela.
-
-## Límites técnicos
-
-- El cronómetro de sala, la preparación, la largada y la bonificación de vueltas siguen en el servidor.
-- Las físicas interactivas de los humanos siguen siendo locales con posiciones por WebSocket; con latencia extrema pueden verse desajustes temporales entre dispositivos. La colisión de CPU contra cada jugador es local y se aplica en el cliente dueño de ese jugador.
-- Los CPU se calculan de forma determinista usando el tiempo compartido y se separan visualmente al acercarse.
-- Si la pestaña se cierra o la conexión WebSocket se corta definitivamente, el servidor libera su plaza. El servicio gratuito de Render puede suspenderse por inactividad, lo que elimina las salas en memoria.
-- Se comprobaron la sintaxis JavaScript y Python, simulación en navegador sin motor WebGL, asignación de 18 CPU con dos humanos, choque del jugador con un CPU, avance en pestaña oculta y recuperación servidor tras una pausa. **No se completó una prueba end-to-end del renderizado 3D con dos navegadores reales**; conviene verificar visualmente en Render.
+1. Extraer el ZIP y subir los seis archivos de la raíz al repositorio `NicolasAnzevino/Cabrotona-USA` rama `main`, reemplazando los anteriores.
+2. Hacer un commit. Render desplegará automáticamente el cambio.
+3. Comprobar que aparezca `Live` en Events y recargar la página sin caché.
 
 ## Ejecución local
 
@@ -44,4 +26,16 @@ pip install -r requirements.txt
 python server.py
 ```
 
-Abrí `http://localhost:10000` desde un navegador (o desde otros dispositivos usando la IP de la computadora en la misma red).
+La prueba del juego 3D en dos dispositivos reales requiere comprobarse en Render tras publicar.
+
+
+## Nuevo: ícono de pestaña Cabrotona USA
+- Se incorporó la imagen proporcionada como favicon de navegador (`favicon.ico`) y versiones PNG de 16, 32, 48, 192 y 256 píxeles.
+- `apple-touch-icon.png` para acceso directo en iPhone/iPad.
+- El servidor expone rutas específicas para los íconos. Se reemplazó el viejo favicon incrustado en el HTML.
+- No se modificaron la física, los CPU, el multijugador ni la gestión del segundo plano.
+- Para publicar: subir **todos los archivos** del ZIP a la raíz de la rama `main`, hacer commit y esperar a que Render termine el despliegue. Si aparece el ícono anterior, recargar sin caché o cerrar y reabrir la pestaña.
+
+
+## Actualización del favicon (imagen nueva del auto 41)
+Se reemplazaron únicamente las imágenes de favicon por la nueva imagen proporcionada, en tamaños 16, 32, 48, 192 y 256, además del `.ico` y `apple-touch-icon`. Se actualizó la versión de caché de las referencias en `index.html` a `v=5`. El motor, multijugador, NPC, física y servidor no fueron modificados.

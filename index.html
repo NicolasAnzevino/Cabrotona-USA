@@ -1,6 +1,11 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
-<title>Cabrotona USA</title>
-<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACfElEQVR4nO2av27bMBDGP8eEocn1rKkg+gBaDHvMmCFdC7hP4KGDxz5AhowZMnTM5gJdik6aio4aOugBCo+eBU9MEMRdTJWiJVokFduV7gcYEGn9OfK+I6mjAIIgCIIgCKKb9ABgvV5vT23IKQjDsMd8b8I5b8IWZ1arldf1zh2gNzwTIj/+gff4gG/uVmkIBIXyA4CYMcSM5Xa4dsSFp23/PdZjwGazQRRFeVl6/urysvZDkySpfa6KqrJ091sERXXYKCEMw17nFeA8Bth43tXjOqOdtzMhEDOGW8Zwt7NDKsF2TCAF2JzMOceb7RbZ4+NRPa8zCgJ8fn5GJkSuCl0JdSEF1DlJxtV0OgUAXL2ePdbonpdlzjmWyyUmk4nx+lYrYDabHVyptroD6mAMAV3658TtbhrMF0cloXA/GODPhdnHpICyynP2/CHKpkPT4ogUoFeUjZpyQSPEHYABgI+vbNYhHvKjUbAA8M/zErVsWiZ3XgF7r8OqAoTIjm+RJ19QvRSWSpAKKKTE1IZL+cwdDBCp3VpcEkTi8EkGTA3XUdva+RBwzge4etrmfnVUYeP5simSFKBX6NNJFb4x68s1bnCNG+/7kAJMf+r5eJWRZealiqym4gB1+dMc3jtD58oiCPDp6QnvXl4KdToUAqc2wJevVcnZJMHPKMLv4bBQp0MK0CvexnF+/Mtw4feGDDA9QxIrNgFAmqYNPZ0UsK8AvbfbTucV0PkO2AuBNE2Ne3r9fh/j8bgxA+rsH87n89y2piEFnNqAY2BSWecVkCdF1TyZjLlzpWwssPkWQU2KkgKA6rR429C3xkq/FB2qb08EQRAEQRAE0Vr+AsGw00LsKubvAAAAAElFTkSuQmCC">
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><title>Cabrotona USA</title>
+<link rel="icon" href="/favicon.ico?v=5" sizes="any">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=5">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=5">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=5">
+</head><body>
+
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Russo+One&display=swap">
@@ -883,13 +888,7 @@ function sim(dt) {
     return;
   }
   let inp;
-  if (racing) {
-    // Con la pestaña oculta no hay teclado. El piloto automático mantiene el
-    // vehículo en pista sin pausar el reloj global (control manual al volver).
-    inp = S.mp && document.hidden
-      ? autoDrive(Math.max(PACE, Math.min(50, P.v)), S.myLane || 0)
-      : readInput();
-  }
+  if (racing) inp = readInput();
   else {
     S.finT += dt;
     inp = autoDrive(S.mode === 'timeout' ? 26 : Math.max(34, 56 - S.finT * 3));
@@ -2299,21 +2298,6 @@ function mpOnPeers() {
   }
   NET.host = state.host === mpMyPeer();
   NET.cpu = !!state.cpu;
-  // Si el navegador estuvo suspendido, el servidor siguió manejando este
-  // vehículo. Recuperar su posición antes de reanudar la física local.
-  if (S.mp && (S.mode === 'race' || S.mode === 'countdown')) {
-    const myself = mpPeers().find(p => p.sameTab);
-    const saved = myself && myself.presence;
-    if (saved && saved.auto && Array.isArray(saved.p) && saved.p.length >= 8 &&
-        Number.isFinite(saved.p[0]) && saved.p[0] > P.dist + 1) {
-      P.dist = saved.p[0];
-      P.d = clamp(saved.p[1], -(WALL - CAR_WD / 2), WALL - CAR_WD / 2);
-      P.v = clamp(saved.p[2], 0, MAXV * 1.12);
-      P.phi = 0; P.psi = 0; P.prevDist = P.dist; P.prevD = P.d;
-      P.lapsDone = Math.max(P.lapsDone, saved.p[5] | 0);
-      P.inv = Math.max(P.inv, 0.4);
-    }
-  }
   if (state.notice && S.lb) { S.lb.msg = state.notice; S.lb.msgT = 3; }
   if (state.phase === 'intro' && S.lb && state.rid > NET.rid && state.ord.includes(mpMyPeer())) {
     NET.rid = state.rid;
@@ -3540,36 +3524,16 @@ try {
   if (lede) { lede.hidden = false; lede.style.display = 'block'; lede.textContent = 'No se pudo iniciar el motor 3D (' + (err && err.message ? err.message : err) + '). Probá recargar la página o usar otro navegador.'; }
   $('startBtn').disabled = true;
 }
-// Física desacoplada del render: requestAnimationFrame se suspende en pestañas
-// ocultas. El reloj global continúa en el servidor y este timer ejecuta la
-// simulación incluso sin cuadros 3D. Al volver, recupera pequeños retrasos.
-const FIXED_DT = 1 / 60;
-let simLast = Date.now(), simDebt = 0;
-function simulationTimer() {
-  const now = Date.now();
-  const elapsed = Math.max(0, (now - simLast) / 1000);
-  simLast = now;
-  // El navegador puede suspender JS al apagar el móvil. El tiempo de la sala
-  // sigue siendo autoritativo; limitar la recuperación evita bloquear la UI.
-  simDebt = Math.min(simDebt + elapsed, S.mp ? 3 : 0.25);
-  let n = 0;
-  while (simDebt >= FIXED_DT && n < 180) {
-    step(FIXED_DT);
-    simDebt -= FIXED_DT;
-    n++;
-  }
-}
-setInterval(simulationTimer, 50);
-document.addEventListener('visibilitychange', simulationTimer);
-let lastRenderTime = 0;
+let last = 0, accT = 0;
 function frame(now) {
-  const dt = Math.min(0.15, (now - lastRenderTime) / 1000 || 0);
-  lastRenderTime = now;
+  const dt = Math.min(0.25, (now - last) / 1000 || 0); last = now; accT += dt;
+  const STEP = 1 / 60;
+  while (accT >= STEP) { step(STEP); accT -= STEP; }
   if (R3) { try { render(dt); } catch (e) { if (!frame.err) { frame.err = true; console.error(e); } } }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-window.__r500 = { S, P, NET, CARS, MP_CARS, CPU_CAR, keys, step, startRace, startRaceMP, cpuContact, simulationTimer, frameAt, stepPlayer, drawHUD, get standings() { return mpStandings(); }, get remoteMeshes() { return remoteMeshes; }, get cars() { return cars; }, get L() { return L; }, get N() { return N; }, get raceT() { return raceT; }, KK, BB };
+window.__r500 = { S, P, NET, CARS, MP_CARS, CPU_CAR, keys, step, startRace, startRaceMP, cpuContact, frameAt, stepPlayer, drawHUD, get standings() { return mpStandings(); }, get remoteMeshes() { return remoteMeshes; }, get cars() { return cars; }, get L() { return L; }, get N() { return N; }, get raceT() { return raceT; }, KK, BB };
 })();
 </script>
 
