@@ -25,6 +25,12 @@ LAP_BONUS = 48.0
 INTRO_SECONDS = 4.2
 COUNTDOWN_SECONDS = 3.12
 MAX_LAPS = 6
+# Mismo largo de pista que buildTrackData() del cliente (metros).
+TRACK_LENGTH = 3630.1255995267634
+PACE = 34.0
+CAR_LENGTH = 4.9
+CAR_WIDTH = 2.1
+
 
 rooms = {}
 sessions = {}
@@ -114,6 +120,10 @@ async def handle_command(room_name, peer_id, data):
                  lap={pid: 0 for pid in players}, bonus=0)
         for pid in players:
             room[pid]["presence"]["p"] = None
+            room[pid]["presence"]["auto"] = False
+            room[pid]["auto"] = False
+            room[pid]["lastPos"] = time.monotonic()
+            room[pid]["autoTick"] = 0.0
         await publish_state(room_name)
     elif cmd == "lobby":
         if peer_id != s["host"] or s["phase"] == "lobby":
@@ -163,7 +173,8 @@ async def websocket_handler(request):
                 used_slots = {state["slot"] for state in room.values()}
                 slot = next(n for n in range(1, MAX_PLAYERS + 1) if n not in used_slots)
                 previous = [peer_view(pid, state) for pid, state in room.items()]
-                room[peer_id] = {"ws": ws, "slot": slot, "presence": {}}
+                room[peer_id] = {"ws": ws, "slot": slot, "presence": {},
+                                 "lastPos": time.monotonic(), "autoTick": 0.0, "auto": False}
                 if name not in sessions:
                     sessions[name] = new_session(peer_id)
                 await ws.send_json({"type": "joined", "id": peer_id,
@@ -187,6 +198,20 @@ async def websocket_handler(request):
                     update.pop("n", None)
                     update.pop("t", None)
                     update.pop("c", None)
+                # Si el servidor mantuvo el auto en marcha mientras la pestaña
+                # quedó suspendida, evitar que un paquete atrasado lo haga retroceder.
+                incoming = update.get("p")
+                current = state["presence"].get("p")
+                if (isinstance(incoming, list) and state["auto"] and
+                        isinstance(current, list) and incoming[0] < current[0] - 2):
+                    update.pop("p", None)
+                    await ws.send_json({"type": "peer_presence", "id": peer_id,
+                                        "patch": {"p": current, "auto": True}})
+                elif isinstance(incoming, list):
+                    state["auto"] = False
+                    state["lastPos"] = now
+                    state["autoTick"] = now
+                    update["auto"] = False
                 state["presence"].update(update)
                 # Host flag and racing phase are owned by the server.
                 state["presence"]["h"] = int(s["host"] == peer_id)
@@ -227,6 +252,67 @@ async def websocket_handler(request):
     return ws
 
 
+def grid_slot(k):
+    right = k % 2
+    return (3.75 if right else -10.9,
+            24 - (k // 2) * 18 + (6 if right else 0))
+
+
+async def update_idle_drivers(room_name, session, now_wall):
+    """Servidor: mantiene rodando a los pilotos si un navegador queda en pausa.
+
+    El piloto automático sólo se activa al dejar de recibir estado. Se usa la
+    pista en coordenadas (distancia, lateral), sin render 3D ni entradas de UI.
+    Al reconectar, el servidor entrega la última posición válida al cliente.
+    """
+    if session["phase"] != "race" or now_wall >= session["deadline"]:
+        return
+    room = rooms.get(room_name, {})
+    now_mono = time.monotonic()
+    t_r = max(0.0, now_wall - session["raceAt"])
+    for pid, state in list(room.items()):
+        p = state["presence"].get("p")
+        if pid not in session["ord"] or not isinstance(p, list) or p[6]:
+            continue
+        if now_mono - state["lastPos"] <= 1.5:
+            continue
+        # Autopiloto prudente: el usuario puede volver a tomar el control.
+        dt = min(0.5, max(0.0, now_mono - (state["autoTick"] or now_mono)))
+        state["autoTick"] = now_mono
+        if not state["auto"]:
+            state["auto"] = True
+            continue
+        if dt <= 0:
+            continue
+        p = list(p)
+        speed = min(50.0, max(PACE, p[2] + (50.0 - p[2]) * min(1.0, 2 * dt)))
+        p[0] += speed * dt
+        p[2], p[3], p[4] = speed, 0.0, 0.0
+        # Los NPC violeta son obstáculos también para el autopiloto remoto.
+        if session["cpu"]:
+            for k in range(20 - len(session["ord"])):
+                lane, start = grid_slot(len(session["ord"]) + k)
+                cpu_speed = 42.0 + (k % 8) * 2.2
+                cpu_dist = start + cpu_speed * t_r
+                cpu_lane = lane + math.sin(t_r * 0.34 + k * 1.7) * 0.8
+                if (abs(p[1] - cpu_lane) < CAR_WIDTH + 0.15 and
+                        cpu_dist - CAR_LENGTH - 0.15 < p[0] < cpu_dist + CAR_LENGTH):
+                    p[0] = cpu_dist - CAR_LENGTH - 0.15
+                    p[2] = min(p[2], cpu_speed * 0.94)
+        lap = max(0, min(MAX_LAPS, int(max(0, p[0]) / TRACK_LENGTH)))
+        if lap > session["lap"].get(pid, 0):
+            if lap == session["lap"].get(pid, 0) + 1:
+                session["lap"][pid] = lap
+                if lap < MAX_LAPS:
+                    session["deadline"] += LAP_BONUS
+                    session["bonus"] += 1
+                    await publish_state(room_name)
+        p[5] = max(p[5], lap)
+        state["presence"].update({"p": p, "auto": True})
+        await relay(room_name, {"type": "peer_presence", "id": pid,
+                                "patch": {"p": p, "auto": True}})
+
+
 async def ticker(app):
     while True:
         await asyncio.sleep(0.2)
@@ -242,6 +328,8 @@ async def ticker(app):
                 s.update(phase="lobby", ord=[], introAt=0, countdownAt=0,
                          raceAt=0, deadline=0, lap={}, ready={}, bonus=0)
                 await publish_state(name)
+            if s["phase"] == "race":
+                await update_idle_drivers(name, s, time.time())
 
 
 async def tick_context(app):

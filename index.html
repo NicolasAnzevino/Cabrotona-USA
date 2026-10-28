@@ -257,7 +257,12 @@ const MP_LIVERIES = [
   ['CELESTE',  '#42c9f5', '#2799d6', '#1d6798', '#122c46'],
   ['NARANJA',  '#ff9b31', '#e8780e', '#a74e09', '#20170d']
 ];
-const CPU_CAR = mkCar({ top: '#a45aff', side: '#7832bb', edge: '#4e1a84', body: 0x7832bb, ink: '#ffffff', dark: false });
+const CPU_CAR = mkCar({
+  top: '#a45aff', side: '#7832bb', edge: '#4e1a84', body: 0x7832bb,
+  color: '#7832bb', sec: '#4e1a84', accent: '#c79aff',
+  ink: '#ffffff', num: 'CPU', spons: 'CABROTONA', tag: 'CPU', dark: false,
+  isPlayer: false
+});
 const MP_CARS = MP_LIVERIES.map((v, i) => mkCar({
   trans: 'auto', acc: 'B', grip: 'C', top: v[1], side: v[2], edge: v[3],
   body: parseInt(v[2].slice(1), 16), ink: v[4], dark: i === 4
@@ -767,10 +772,47 @@ function autoDrive(target, lat) {
    - golpes muy fuertes (diferencia de velocidad enorme) hacen girar o volcar el auto.
    --------------------------------------------------------------------- */
 const CONTACT_E = 0.55;
+// Física local de contacto contra CPU, que tiene recorrido común calculado
+// desde el reloj del servidor. No debe mover al CPU: su pose es idéntica
+// para todos los clientes. Impide tanto atravesarlo longitudinalmente como
+// colarse por un costado cuando las cajas de colisión se superponen.
+function cpuContact(c, dt) {
+  const g = c.dist - P.dist, lat = P.d - c.d;
+  const longLimit = CAR_L + 0.12, sideLimit = CAR_WD + 0.10;
+  const xPen = longLimit - Math.abs(g), yPen = sideLimit - Math.abs(lat);
+  if (xPen <= 0 || yPen <= 0) return false;
+  const wall = WALL - CAR_WD / 2;
+  if (xPen / longLimit <= yPen / sideLimit) {
+    // Tope delantero/trasero: no permitimos cruzar al otro lado del CPU.
+    const behind = P.prevDist !== undefined && P.prevDist < c.dist
+      ? true : P.dist <= c.dist;
+    P.dist = c.dist + (behind ? -longLimit : longLimit);
+    if (behind) P.v = Math.max(0, Math.min(P.v, c.v * 0.94));
+    else P.v = Math.max(P.v, c.v * 0.96);
+    P.psi *= 0.75;
+  } else {
+    // Roce lateral: separar carrocerías, mantener empuje y reducir velocidad.
+    const dir = (lat || (P.prevD || 0) - c.d) >= 0 ? 1 : -1;
+    const edge = clamp(c.d + dir * sideLimit, -wall, wall);
+    P.d = edge;
+    P.sv = dir * Math.min(5, Math.max(1.0, Math.abs(P.sv || 0)));
+    P.v = Math.max(0, P.v * (1 - Math.min(0.25, dt * 8)));
+    P.shoveT = Math.max(P.shoveT || 0, 0.3);
+  }
+  P.crash = Math.max(P.crash, 0.18);
+  if (!(P.sideCD > 0)) {
+    P.sideCD = 0.28;
+    thump(0.35);
+    beep(155, 0.10, 'square', 0.07);
+  }
+  return true;
+}
 function carContacts(dt) {
-  if (S.mode !== 'race' || P.inv > 0 || P.tumble > 0) return;
+  if (S.mode !== 'race' || P.tumble > 0) return;
   for (const c of cars) {
-    if (!c.run || (S.mp && c.cpu)) continue;
+    if (!c.run || c.unused) continue;
+    if (S.mp && c.cpu) { cpuContact(c, dt); continue; }
+    if (P.inv > 0) continue;
     const g = cdiff(c.dist - P.dist), dd = c.d - P.d, ag = Math.abs(g), ad = Math.abs(dd);
     if (ag >= CAR_L || ad >= CAR_WD) continue;
     const pg = (CAR_L - ag) / CAR_L, pd = (CAR_WD - ad) / CAR_WD;
@@ -841,12 +883,19 @@ function sim(dt) {
     return;
   }
   let inp;
-  if (racing) inp = readInput();
+  if (racing) {
+    // Con la pestaña oculta no hay teclado. El piloto automático mantiene el
+    // vehículo en pista sin pausar el reloj global (control manual al volver).
+    inp = S.mp && document.hidden
+      ? autoDrive(Math.max(PACE, Math.min(50, P.v)), S.myLane || 0)
+      : readInput();
+  }
   else {
     S.finT += dt;
     inp = autoDrive(S.mode === 'timeout' ? 26 : Math.max(34, 56 - S.finT * 3));
     P.inv = Math.max(P.inv, 0.3);
   }
+  P.prevDist = P.dist; P.prevD = P.d;
   stepPlayer(dt, inp);
   aiStep(dt);
   carContacts(dt);
@@ -1315,7 +1364,7 @@ function buildCar(def, shared, renderer, isPlayer) {
 
   const paints = [];
   const dm = (fn, w, h) => new THREE.MeshLambertMaterial({
-    map: ctex(w, h, c => fn(c, w, h, def), false, renderer, isPlayer ? (paints[paints.length] = { fn, w, h, def }) : null),
+    map: ctex(w, h, c => fn(c, w, h, def), false, renderer, (paints[paints.length] = { fn, w, h, def })),
     side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3
   });
   if (isPlayer) {
@@ -1400,7 +1449,7 @@ function buildCar(def, shared, renderer, isPlayer) {
   }
   const damageModel = isPlayer ? { spoiler, spL, spR, cab, rearBump, rearLower } : null;
   const sh = new THREE.Mesh(shared.shadowGeo, shared.shadowMat); sh.position.y = .045; g.add(sh);
-  return { group: g, wheels, bodyMat, cabMat, damageModel, glassSurfaces, paints, bumpMat: isPlayer ? bumpMat : null, sideGlassMat: isPlayer ? glass : null, b: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] };
+  return { group: g, wheels, bodyMat, cabMat, lowerMat, isPlayer, damageModel, glassSurfaces, paints, bumpMat: isPlayer ? bumpMat : null, sideGlassMat: isPlayer ? glass : null, b: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] };
 }
 
 /* ---- partículas: humo de derrape y chispas ---- */
@@ -2250,6 +2299,21 @@ function mpOnPeers() {
   }
   NET.host = state.host === mpMyPeer();
   NET.cpu = !!state.cpu;
+  // Si el navegador estuvo suspendido, el servidor siguió manejando este
+  // vehículo. Recuperar su posición antes de reanudar la física local.
+  if (S.mp && (S.mode === 'race' || S.mode === 'countdown')) {
+    const myself = mpPeers().find(p => p.sameTab);
+    const saved = myself && myself.presence;
+    if (saved && saved.auto && Array.isArray(saved.p) && saved.p.length >= 8 &&
+        Number.isFinite(saved.p[0]) && saved.p[0] > P.dist + 1) {
+      P.dist = saved.p[0];
+      P.d = clamp(saved.p[1], -(WALL - CAR_WD / 2), WALL - CAR_WD / 2);
+      P.v = clamp(saved.p[2], 0, MAXV * 1.12);
+      P.phi = 0; P.psi = 0; P.prevDist = P.dist; P.prevD = P.d;
+      P.lapsDone = Math.max(P.lapsDone, saved.p[5] | 0);
+      P.inv = Math.max(P.inv, 0.4);
+    }
+  }
   if (state.notice && S.lb) { S.lb.msg = state.notice; S.lb.msgT = 3; }
   if (state.phase === 'intro' && S.lb && state.rid > NET.rid && state.ord.includes(mpMyPeer())) {
     NET.rid = state.rid;
@@ -2320,7 +2384,9 @@ function startRaceMP(ord) {
       c.d = gg.d; c.lane = gg.d; c.v = PACE;
       c.run = true; c.fin = 0; c.psi = 0; c.phi = 0;
       c.color = CPU_CAR.top;
-      if (remoteMeshes[ci + k]) repaintMesh(remoteMeshes[ci + k], CPU_CAR, 'CPU');
+      // El NPC usa SU modelo original, no el Gallop de los jugadores.
+      // En la carrera ningún auto genérico queda visible salvo estos CPU violetas.
+      if (carMeshes[ci + k]) repaintMesh(carMeshes[ci + k], CPU_CAR, 'CPU');
     }
   }
   S.camS = P.dist + 14 + PACE * CD_A;
@@ -2345,8 +2411,10 @@ function mpUpdateRemotes(dt) {
       const speed = 42 + (c.cpuId % 8) * 2.2;
       c.dist = c.gridDist - PACE * CD_TOTAL + PACE * Math.min(timeFromCountdown, CD_TOTAL) + tR * speed;
       c.v = timeFromCountdown < CD_TOTAL ? PACE : speed;
+      const oldD = c.d;
       c.d = clamp(c.lane + Math.sin(tR * 0.34 + c.cpuId * 1.7) * 0.8, -11.5, 11.5);
-      c.phi = c.psi = 0; c.unused = false;
+      c.psi = Math.atan2((c.d - oldD) / Math.max(dt, 0.01), Math.max(c.v, 1));
+      c.phi = c.psi * 0.8; c.unused = false;
       continue;
     }
     if (!c.remote) continue;
@@ -2364,6 +2432,20 @@ function mpUpdateRemotes(dt) {
       c.v = s.v; c.psi = s.psi; c.phi = s.phi; if (s.fin && !c.fin) c.fin = 1; c.unused = false; c.run = true;
     } else if (c.hadSnap && pr.st === 'lobby') { c.unused = true; c.run = false; }
     else if (S.mode === 'countdown') { c.dist += PACE * dt; c.v = PACE; }
+  }
+  // Mantener sólida la parrilla violeta también entre CPU: los que alcanzan
+  // a otro en el mismo carril frenan, en vez de superponerse visualmente.
+  const bots = cars.filter(c => c.cpu && !c.unused).sort((a, b) => b.dist - a.dist);
+  for (let i = 1; i < bots.length; i++) {
+    const follower = bots[i];
+    for (let j = 0; j < i; j++) {
+      const leader = bots[j];
+      if (leader.dist - follower.dist < CAR_L + 0.18 &&
+          Math.abs(leader.d - follower.d) < CAR_WD + 0.20) {
+        follower.dist = leader.dist - CAR_L - 0.18;
+        follower.v = Math.min(follower.v, leader.v);
+      }
+    }
   }
 }
 function mpSend() {
@@ -3193,8 +3275,8 @@ function render(dt) {
   const vis = (st) => { const g = cdiff(st.dist - target.dist); return g > -90 && g < 1100; };
   remoteMeshes.forEach(m => { m.group.visible = false; });
   cars.forEach((c, i) => {
-    const m = carMeshes[i], remote = S.mp && (c.remote || c.cpu) ? remoteMeshes[i] : null;
-    const v = !c.unused && vis(c);
+    const m = carMeshes[i], remote = S.mp && c.remote ? remoteMeshes[i] : null;
+    const v = !c.unused && (!S.mp || !!c.remote || !!c.cpu) && vis(c);
     m.group.visible = v && !remote;
     if (remote) remote.group.visible = v;
     if (v && S.mode !== 'timeout') placeCar(remote || m, c, dt, false);
@@ -3256,10 +3338,16 @@ function applyView() { }
 function repaintMesh(mesh, car, number = '41') {
   const keep = LK, oldNumber = PAINT_NUM; PAINT_NUM = number; setLook(car);
   try {
-    mesh.bodyMat.color.setHex(car.body); if (mesh.cabMat) mesh.cabMat.color.setHex(car.body);
+    mesh.bodyMat.color.setHex(car.body);
+    if (mesh.cabMat) mesh.cabMat.color.setHex(car.body);
+    if (mesh.lowerMat && !mesh.isPlayer) mesh.lowerMat.color.set(car.sec);
     if (mesh.bumpMat) mesh.bumpMat.color.setHex(car.dark ? 0x5f6268 : 0xe9edf5);
     if (mesh.paints) mesh.paints.forEach(p => {
-      if (!p.c) return; const g = p.c.getContext('2d'); g.clearRect(0, 0, p.w, p.h); p.fn(g, p.w, p.h, p.def);
+      if (!p.c) return;
+      // Las texturas de los NPC estaban ligadas al color del auto generado en la demo.
+      // Cambiar solo la chapa no cambiaba los vinilos: antes quedaban NPC multicolor.
+      if (!mesh.isPlayer) p.def = car;
+      const g = p.c.getContext('2d'); g.clearRect(0, 0, p.w, p.h); p.fn(g, p.w, p.h, p.def);
       if (p.tex) p.tex.needsUpdate = true;
     });
   } catch (e) { }
@@ -3279,6 +3367,8 @@ function showMenu(keepSel) {
   S.mode = 'menu'; S.paused = false; msgs = []; S.te = null; S.finT = 0; S.introT = 0; S.resultPlace = 20; S.demoT = 0; S.sel = !!keepSel; if (!keepSel) { S.mm = null; S.cs = null; S.ms = null; S.gs = null; } repaintPlayer(S.trans); S.holdFov = null; resCache = null; DEMO.away = null; S.curve = null;
   if (document.body) document.body.dataset.menu = '1';
   resetPlayer(); makeCars(); finCount = 0; raceT = 0;
+  // Restaurar los NPC originales cuando se vuelve de multiplayer al modo individual.
+  if (carMeshes.length) carMeshes.forEach((m, i) => { if (cars[i]) repaintMesh(m, cars[i]); });
   P.v = 48; P.gear = 2; P.dist = 0; P.d = 3; P.phi = 0; P.psi = 0;
   {
     // La demo arranca desde un punto tal que el #41 llega a la salida de una curva justo cuando empieza la toma final (1:25).
@@ -3450,16 +3540,36 @@ try {
   if (lede) { lede.hidden = false; lede.style.display = 'block'; lede.textContent = 'No se pudo iniciar el motor 3D (' + (err && err.message ? err.message : err) + '). Probá recargar la página o usar otro navegador.'; }
   $('startBtn').disabled = true;
 }
-let last = 0, accT = 0;
+// Física desacoplada del render: requestAnimationFrame se suspende en pestañas
+// ocultas. El reloj global continúa en el servidor y este timer ejecuta la
+// simulación incluso sin cuadros 3D. Al volver, recupera pequeños retrasos.
+const FIXED_DT = 1 / 60;
+let simLast = Date.now(), simDebt = 0;
+function simulationTimer() {
+  const now = Date.now();
+  const elapsed = Math.max(0, (now - simLast) / 1000);
+  simLast = now;
+  // El navegador puede suspender JS al apagar el móvil. El tiempo de la sala
+  // sigue siendo autoritativo; limitar la recuperación evita bloquear la UI.
+  simDebt = Math.min(simDebt + elapsed, S.mp ? 3 : 0.25);
+  let n = 0;
+  while (simDebt >= FIXED_DT && n < 180) {
+    step(FIXED_DT);
+    simDebt -= FIXED_DT;
+    n++;
+  }
+}
+setInterval(simulationTimer, 50);
+document.addEventListener('visibilitychange', simulationTimer);
+let lastRenderTime = 0;
 function frame(now) {
-  const dt = Math.min(0.25, (now - last) / 1000 || 0); last = now; accT += dt;
-  const STEP = 1 / 60;
-  while (accT >= STEP) { step(STEP); accT -= STEP; }
+  const dt = Math.min(0.15, (now - lastRenderTime) / 1000 || 0);
+  lastRenderTime = now;
   if (R3) { try { render(dt); } catch (e) { if (!frame.err) { frame.err = true; console.error(e); } } }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-window.__r500 = { S, P, NET, CARS, MP_CARS, keys, step, startRace, startRaceMP, frameAt, stepPlayer, drawHUD, get standings() { return mpStandings(); }, get remoteMeshes() { return remoteMeshes; }, get cars() { return cars; }, get L() { return L; }, get N() { return N; }, get raceT() { return raceT; }, KK, BB };
+window.__r500 = { S, P, NET, CARS, MP_CARS, CPU_CAR, keys, step, startRace, startRaceMP, cpuContact, simulationTimer, frameAt, stepPlayer, drawHUD, get standings() { return mpStandings(); }, get remoteMeshes() { return remoteMeshes; }, get cars() { return cars; }, get L() { return L; }, get N() { return N; }, get raceT() { return raceT; }, KK, BB };
 })();
 </script>
 
