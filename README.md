@@ -1,21 +1,29 @@
-# Cabrotona USA — multijugador con 8 colores y ranking en vivo
+# Cabrotona USA — multijugador sincronizado
 
-Versión actualizada a partir de **Cabrotona USA (11)**, manteniendo el contenido original (modos individuales, física, audio, cámaras y pista). Los cambios de esta versión se aplican **solo al multijugador**.
+Versión preparada para Render. Conserva los modos individuales, el motor 3D y los colores/números de los ocho jugadores, e incluye estos cambios exclusivos para **Multiplayer**:
 
-## Autos por participante
+- Clasificación transparente, sin título ni panel: cuadrado del color del piloto, posición actual y apodo.
+- Un **único cronómetro de sala** dirigido por el servidor, con inicio simultáneo y +48 segundos para **todos** cuando un piloto completa una vuelta (hasta la sexta vuelta).
+- El anfitrión solo puede largar con un mínimo de dos jugadores y **todos los invitados en LISTO**. Los invitados pueden activar/cancelar LISTO.
+- Antes de la largada se muestra a todos la pantalla original **«Gentlemen, start your engines»**, y después la cuenta regresiva compartida.
+- Opción **Non-player cars** en el lobby, apagada por defecto y configurable solo por el anfitrión. Cuando está activada, se muestran autos **violetas** hasta llegar a **20 autos totales** (jugadores + CPU). Los CPU no cuentan en posiciones ni puestos finales, y no chocan con jugadores (son tráfico visual sincronizado).
+- Colores de jugadores fijos: rojo, azul, amarillo, verde, negro, rosa, celeste y naranja (1P–8P).
 
-1P: rojo / nº 1 · 2P: azul / nº 2 · 3P: amarillo / nº 3 · 4P: verde / nº 4 · 5P: negro / nº 5 · 6P: rosa / nº 6 · 7P: celeste / nº 7 · 8P: naranja / nº 8.
+## Cómo actualizar GitHub/Render
 
-Los números son **asientos de sala asignados por el servidor**, no posiciones de carrera. Si un piloto abandona, el asiento queda disponible para el próximo piloto; los demás mantienen su número. Todos los rivales se dibujan con el **modelo Gallop completo**, igual que el auto controlado localmente, con color y número que les corresponden en carrocería/techo. Se muestra el color y número en el lobby y en el radar.
+1. Subí los archivos de **este ZIP** a la raíz del repositorio [Cabrotona-USA](https://github.com/NicolasAnzevino/Cabrotona-USA), sobrescribiendo los anteriores: `index.html`, `multiplayer.js`, `server.py`, `requirements.txt`, `render.yaml` y `README.md`.
+2. Confirmá los cambios en la rama `main` (**Commit changes**).
+3. Render despliega automáticamente desde esa rama si el servicio tiene Auto Deploy habilitado. Mirá `Events` y esperá el estado `Live`.
+4. Para intentar cambiar la URL de `cabrotona-usa-multijugador.onrender.com` a **`cabrotona-usa.onrender.com`**, abrí el **servicio existente** en Render y buscá en **Settings → General → Name** la opción de cambiar el nombre a `cabrotona-usa`. Comprobá la nueva URL que muestre Render y que esté disponible. **No crees otro servicio ni borres el anterior** solo para actualizar el código. Cambiar `name` en `render.yaml` no renombra por sí solo un servicio creado anteriormente desde el panel.
 
-En carrera, el panel izquierdo reemplaza los tiempos de vueltas por **POSICIONES EN VIVO**, con orden por progreso en la pista y formato `2P: Nico`, `1P: Agustin`, etc. Se recalcula cada cuadro a partir de las posiciones WebSocket. El contador y los tiempos del modo individual siguen como estaban.
+### Arquitectura y límites
 
-## Actualizar el repositorio existente
-
-1. Descomprimí este ZIP.
-2. En tu repositorio `NicolasAnzevino/Cabrotona-USA`, **reemplazá** los archivos de la raíz por `index.html`, `multiplayer.js`, `server.py`, `requirements.txt` y `render.yaml` del ZIP; guardá los cambios con **Commit changes**. No subas el ZIP sin descomprimir.
-3. En tu servicio `cabrotona-usa-multijugador` de Render, si la publicación automática está activa, el commit dispara un nuevo despliegue. Revisá **Events** o **Logs** hasta ver **Live**.
-4. Abrí `https://cabrotona-usa-multijugador.onrender.com` en dos dispositivos, creá una sala e invitá al otro participante con el código. Cada participante debe abrir la misma versión actualizada.
+- Un proceso `aiohttp` sirve `/` y `/multiplayer.js`, acepta WebSocket en `/ws` y expone `/health`.
+- El servidor valida quién es el anfitrión, quién está listo, los CPU opcionales, el inicio de la carrera, el tiempo único y los bonos por vuelta; emite el estado a todos los clientes.
+- Los movimientos y la física del auto de cada humano se calculan en su navegador y se transmiten aproximadamente 22 veces/segundo para que los demás los vean. **No hay físicas de colisión deterministas/autoritativas del lado del servidor**, por lo que los contactos entre autos humanos aún pueden presentar diferencias entre dispositivos bajo mucha latencia. Los CPU siguen una trayectoria visual determinista a partir del reloj compartido.
+- Para no exceder las ocho conexiones humanas por sala, las salas admiten como máximo **8 participantes**. Los cupos CPU solo se activan al empezar la carrera.
+- Las salas viven en memoria del proceso; si Render reinicia o suspende el servicio, las salas activas se pierden. Un plan gratuito puede suspenderse por inactividad.
+- Los jugadores que intentan ingresar después de iniciarse la carrera reciben un aviso de que la sala está jugando.
 
 ## Ejecutar localmente
 
@@ -24,8 +32,4 @@ pip install -r requirements.txt
 python server.py
 ```
 
-Abrí `http://localhost:10000`. Para salud del servicio: `/health`. El multijugador necesita conexión WebSocket, por lo que no sirve abrir el HTML como archivo local sin el servidor.
-
-## Alcance
-
-La sala admite máximo 8 pilotos por proceso y mantiene los datos en memoria. Los coches remotos se interpolan con datos del servidor; la física es cliente a cliente (no hay árbitro de colisiones ni precisión competitiva garantizada). Render Free puede entrar en suspensión por inactividad. La carga de Three.js desde CDN y las fuentes necesitan acceso a Internet.
+Luego abrí http://localhost:10000 en dos pestañas o dispositivos de la misma red (usando la IP del host).

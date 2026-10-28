@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: cabrotona-usa-multijugador
+    name: cabrotona-usa
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt

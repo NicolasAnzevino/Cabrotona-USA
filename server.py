@@ -1,10 +1,8 @@
-"""Cabrotona USA multiplayer relay: same-origin HTTP + WebSocket rooms.
+"""Cabrotona USA: shared multiplayer lobby and race clock, aiohttp WebSockets.
 
-Run locally: pip install -r requirements.txt && python server.py
-No accounts, database, or external realtime provider required.
-Rooms and positions only exist while the server is running.
+The server owns readiness, the optional CPU switch, the start instant and the
+single race deadline. Positions remain client-simulated and relayed in real time.
 """
-
 import asyncio
 import json
 import math
@@ -22,59 +20,107 @@ ROOM_RE = re.compile(r"^cab-[a-z0-9]{3,8}$")
 MAX_PLAYERS = 8
 MAX_ROOMS = 200
 MAX_JSON_BYTES = 4096
+START_TIME = 64.0
+LAP_BONUS = 48.0
+INTRO_SECONDS = 4.2
+COUNTDOWN_SECONDS = 3.12
+MAX_LAPS = 6
 
-# Each room contains {peer_id: {"ws": WebSocketResponse, "presence": dict}}.
 rooms = {}
+sessions = {}
 
 
 def peer_view(peer_id, state):
     return {"id": peer_id, "slot": state["slot"], "presence": state["presence"]}
 
 
+def new_session(host):
+    return {"host": host, "ready": {}, "cpu": False, "phase": "lobby",
+            "rid": 0, "ord": [], "introAt": 0, "countdownAt": 0,
+            "raceAt": 0, "deadline": 0, "lap": {}, "bonus": 0}
+
+
+def room_state(room_name):
+    s = sessions[room_name]
+    return {"type": "room_state", "host": s["host"], "ready": s["ready"],
+            "cpu": s["cpu"], "phase": s["phase"], "rid": s["rid"],
+            "ord": s["ord"], "introAt": s["introAt"],
+            "countdownAt": s["countdownAt"], "raceAt": s["raceAt"],
+            "deadline": s["deadline"], "bonus": s["bonus"],
+            "serverNow": time.time()}
+
+
 async def relay(room_name, packet, exclude=None):
-    """Send a room event to the other peers, tolerating disconnects."""
     data = json.dumps(packet, separators=(",", ":"), ensure_ascii=False)
     peers = list(rooms.get(room_name, {}).items())
-    if not peers:
-        return
-    await asyncio.gather(
-        *(state["ws"].send_str(data) for pid, state in peers if pid != exclude and not state["ws"].closed),
-        return_exceptions=True,
-    )
+    if peers:
+        await asyncio.gather(*(state["ws"].send_str(data) for pid, state in peers
+                               if pid != exclude and not state["ws"].closed),
+                             return_exceptions=True)
 
 
-def clean_presence(data, peer_ids):
-    """Whitelist the small set of values used by the original game."""
+async def publish_state(room_name):
+    if room_name in sessions:
+        await relay(room_name, room_state(room_name))
+
+
+def clean_presence(data):
     if not isinstance(data, dict):
         return {}
     out = {}
-    if "n" in data and isinstance(data["n"], str):
+    if isinstance(data.get("n"), str):
         out["n"] = data["n"].strip()[:12]
-    if "t" in data and data["t"] in ("auto", "manual"):
+    if data.get("t") in ("auto", "manual"):
         out["t"] = data["t"]
-    if "h" in data:
-        out["h"] = 1 if data["h"] else 0
-    if "j" in data and isinstance(data["j"], (int, float)) and math.isfinite(data["j"]):
-        out["j"] = int(data["j"])
-    if "st" in data and data["st"] in ("lobby", "race"):
-        out["st"] = data["st"]
-    if "c" in data and type(data["c"]) is int and 0 <= data["c"] <= 2:
+    if type(data.get("c")) is int and 0 <= data["c"] <= 2:
         out["c"] = data["c"]
-    if "rid" in data and type(data["rid"]) is int and 0 <= data["rid"] <= 1_000_000:
-        out["rid"] = data["rid"]
-    if "ord" in data and isinstance(data["ord"], list) and len(data["ord"]) <= MAX_PLAYERS:
-        if all(isinstance(x, str) and x in peer_ids for x in data["ord"]):
-            out["ord"] = list(dict.fromkeys(data["ord"]))
-    if "p" in data:
-        p = data["p"]
-        if p is None:
-            out["p"] = None
-        elif (isinstance(p, list) and len(p) == 8 and
-              all(type(v) in (int, float) and math.isfinite(v) and abs(v) < 10_000_000 for v in p)):
-            out["p"] = p
-    if "fin" in data and data["fin"] is None:
-        out["fin"] = None
+    p = data.get("p", "missing")
+    if p is None:
+        out["p"] = None
+    elif (isinstance(p, list) and len(p) == 8 and all(type(v) in (int, float)
+          and math.isfinite(v) and abs(v) < 10_000_000 for v in p)):
+        out["p"] = p
     return out
+
+
+async def handle_command(room_name, peer_id, data):
+    room = rooms[room_name]
+    s = sessions[room_name]
+    cmd = data.get("cmd")
+    if cmd == "ready":
+        if s["phase"] != "lobby" or peer_id == s["host"]:
+            return
+        s["ready"][peer_id] = data.get("value") is True
+        await publish_state(room_name)
+    elif cmd == "cpu":
+        if s["phase"] != "lobby" or peer_id != s["host"]:
+            return
+        s["cpu"] = data.get("value") is True
+        await publish_state(room_name)
+    elif cmd == "start":
+        if s["phase"] != "lobby" or peer_id != s["host"]:
+            return
+        players = [pid for pid, state in sorted(room.items(), key=lambda it: it[1]["slot"])
+                   if state["presence"].get("n")]
+        if len(players) < 2 or any(not s["ready"].get(pid, False)
+                                   for pid in players if pid != s["host"]):
+            await room[peer_id]["ws"].send_json({"type": "error_notice", "message": "Esperá a que todos estén LISTOS (mínimo 2 jugadores)."})
+            return
+        now = time.time()
+        s.update(phase="intro", rid=s["rid"] + 1, ord=players,
+                 introAt=now, countdownAt=now + INTRO_SECONDS,
+                 raceAt=now + INTRO_SECONDS + COUNTDOWN_SECONDS,
+                 deadline=now + INTRO_SECONDS + COUNTDOWN_SECONDS + START_TIME,
+                 lap={pid: 0 for pid in players}, bonus=0)
+        for pid in players:
+            room[pid]["presence"]["p"] = None
+        await publish_state(room_name)
+    elif cmd == "lobby":
+        if peer_id != s["host"] or s["phase"] == "lobby":
+            return
+        s.update(phase="lobby", ord=[], introAt=0, countdownAt=0,
+                 raceAt=0, deadline=0, lap={}, ready={}, bonus=0)
+        await publish_state(room_name)
 
 
 async def websocket_handler(request):
@@ -92,7 +138,7 @@ async def websocket_handler(request):
             try:
                 data = json.loads(msg.data)
             except (ValueError, TypeError):
-                await ws.send_json({"type": "error", "message": "Mensaje inválido."})
+                await ws.send_json({"type": "error_notice", "message": "Mensaje inválido."})
                 continue
             if not isinstance(data, dict):
                 continue
@@ -105,31 +151,59 @@ async def websocket_handler(request):
                 if name not in rooms and len(rooms) >= MAX_ROOMS:
                     await ws.send_json({"type": "error", "message": "No hay salas libres."})
                     break
+                if name in sessions and sessions[name]["phase"] != "lobby":
+                    await ws.send_json({"type": "error", "message": "Esta sala está corriendo una carrera."})
+                    break
                 room = rooms.setdefault(name, {})
                 if len(room) >= MAX_PLAYERS:
                     await ws.send_json({"type": "error", "message": "La sala está llena."})
                     break
                 peer_id = secrets.token_hex(10)
                 room_name = name
-                previous = [peer_view(pid, state) for pid, state in room.items()]
                 used_slots = {state["slot"] for state in room.values()}
                 slot = next(n for n in range(1, MAX_PLAYERS + 1) if n not in used_slots)
+                previous = [peer_view(pid, state) for pid, state in room.items()]
                 room[peer_id] = {"ws": ws, "slot": slot, "presence": {}}
+                if name not in sessions:
+                    sessions[name] = new_session(peer_id)
                 await ws.send_json({"type": "joined", "id": peer_id,
-                                    "peers": previous + [peer_view(peer_id, room[peer_id])]})
-                await relay(room_name, {"type": "peer_joined", "peer": peer_view(peer_id, room[peer_id])}, exclude=peer_id)
+                                    "peers": previous + [peer_view(peer_id, room[peer_id])],
+                                    "state": room_state(name)})
+                await relay(name, {"type": "peer_joined", "peer": peer_view(peer_id, room[peer_id])}, exclude=peer_id)
+                await publish_state(name)
             elif typ == "presence" and room_name and peer_id in rooms.get(room_name, {}):
                 now = time.monotonic()
                 last_msg_times = [t for t in last_msg_times if now - t < 1.0]
                 if len(last_msg_times) >= 40:
-                    continue  # 22 updates/second in game; ignore excessive traffic.
+                    continue
                 last_msg_times.append(now)
-                update = clean_presence(data.get("patch"), rooms[room_name].keys())
+                update = clean_presence(data.get("patch"))
                 if not update:
                     continue
-                state = rooms[room_name][peer_id]
+                room = rooms[room_name]
+                s = sessions[room_name]
+                state = room[peer_id]
+                if s["phase"] != "lobby":
+                    update.pop("n", None)
+                    update.pop("t", None)
+                    update.pop("c", None)
                 state["presence"].update(update)
+                # Host flag and racing phase are owned by the server.
+                state["presence"]["h"] = int(s["host"] == peer_id)
+                state["presence"]["st"] = "lobby" if s["phase"] == "lobby" else "race"
+                if (s["phase"] in ("intro", "race") and peer_id in s["lap"] and
+                        isinstance(update.get("p"), list) and s["raceAt"] <= time.time() < s["deadline"]):
+                    lap = max(0, min(MAX_LAPS, int(update["p"][5])))
+                    prev = s["lap"][peer_id]
+                    if lap == prev + 1:
+                        s["lap"][peer_id] = lap
+                        if lap < MAX_LAPS:
+                            s["deadline"] += LAP_BONUS
+                            s["bonus"] += 1
+                            await publish_state(room_name)
                 await relay(room_name, {"type": "peer_presence", "id": peer_id, "patch": update}, exclude=peer_id)
+            elif typ == "command" and room_name and peer_id in rooms.get(room_name, {}):
+                await handle_command(room_name, peer_id, data)
             elif typ == "ping" and room_name:
                 await ws.send_json({"type": "pong"})
     finally:
@@ -138,14 +212,46 @@ async def websocket_handler(request):
             if room:
                 room.pop(peer_id, None)
                 if room:
-                    # Aiohttp puede cancelar la tarea HTTP al desconectar un
-                    # WebSocket; enviamos el aviso desde una tarea independiente.
-                    asyncio.create_task(relay(room_name, {"type": "peer_left", "id": peer_id}))
+                    s = sessions[room_name]
+                    s["ready"].pop(peer_id, None)
+                    if s["host"] == peer_id:
+                        s["host"] = min(room, key=lambda pid: room[pid]["slot"])
+                        room[s["host"]]["presence"]["h"] = 1
+                    await relay(room_name, {"type": "peer_left", "id": peer_id})
+                    await publish_state(room_name)
                 else:
                     rooms.pop(room_name, None)
+                    sessions.pop(room_name, None)
         if not ws.closed:
             await ws.close()
     return ws
+
+
+async def ticker(app):
+    while True:
+        await asyncio.sleep(0.2)
+        for name, s in list(sessions.items()):
+            if s["phase"] == "intro" and time.time() >= s["raceAt"]:
+                s["phase"] = "race"
+                await publish_state(name)
+            elif s["phase"] == "race" and time.time() >= s["deadline"]:
+                s["phase"] = "timeout"
+                s["timeoutAt"] = time.time()
+                await publish_state(name)
+            elif s["phase"] == "timeout" and time.time() >= s.get("timeoutAt", 0) + 17:
+                s.update(phase="lobby", ord=[], introAt=0, countdownAt=0,
+                         raceAt=0, deadline=0, lap={}, ready={}, bonus=0)
+                await publish_state(name)
+
+
+async def tick_context(app):
+    task = asyncio.create_task(ticker(app))
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def index(request):
@@ -166,6 +272,7 @@ async def health(request):
 
 
 app = web.Application(client_max_size=MAX_JSON_BYTES)
+app.cleanup_ctx.append(tick_context)
 app.router.add_get("/", index)
 app.router.add_get("/index.html", index)
 app.router.add_get("/multiplayer.js", multiplayer_js)
@@ -173,5 +280,4 @@ app.router.add_get("/health", health)
 app.router.add_get("/ws", websocket_handler)
 
 if __name__ == "__main__":
-    print(f"Cabrotona USA listo en http://localhost:{PORT}", flush=True)
     web.run_app(app, host="0.0.0.0", port=PORT)

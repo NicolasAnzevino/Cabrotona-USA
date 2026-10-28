@@ -13,6 +13,7 @@
       let established = false;
       let intentionalClose = false;
       let completed = false;
+      let session = null;
       const notify = () => { for (const fn of listeners) { try { fn(); } catch (err) { console.warn(err); } } };
       const send = packet => {
         if (ws.readyState !== WebSocket.OPEN) throw new Error('Sin conexión con el servidor');
@@ -32,6 +33,8 @@
       };
       const api = {
         peers: () => Array.from(everyone.values()),
+        state: () => session,
+        command: (cmd, value) => send({ type: "command", cmd, value }),
         onPeers: (fn, onLost) => {
           if (typeof fn === 'function') listeners.add(fn);
           if (typeof onLost === 'function') lostListeners.add(onLost);
@@ -69,7 +72,14 @@
           everyone.clear();
           for (const peer of message.peers || []) addOrChange(peer.id, peer.presence, true, peer.slot);
           established = true;
+          if (message.state) session = message.state;
           if (!completed) { completed = true; resolve(api); }
+          notify();
+        } else if (message.type === 'room_state') {
+          session = message;
+          notify();
+        } else if (message.type === 'error_notice') {
+          session = { ...(session || {}), notice: message.message };
           notify();
         } else if (message.type === 'peer_joined') {
           addOrChange(message.peer.id, message.peer.presence, true, message.peer.slot);
