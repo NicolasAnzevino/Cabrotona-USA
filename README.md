@@ -39,3 +39,15 @@ La prueba del juego 3D en dos dispositivos reales requiere comprobarse en Render
 
 ## Actualización del favicon (imagen nueva del auto 41)
 Se reemplazaron únicamente las imágenes de favicon por la nueva imagen proporcionada, en tamaños 16, 32, 48, 192 y 256, además del `.ico` y `apple-touch-icon`. Se actualizó la versión de caché de las referencias en `index.html` a `v=5`. El motor, multijugador, NPC, física y servidor no fueron modificados.
+
+
+## Online v4 — selección FREE e inicio pulido
+
+- El HUD del modo FREE sube el velocímetro 43 puntos de coordenadas internas (de y=198 a y=155); Arcade/Online mantienen el medidor donde estaba.
+- Selección de auto en FREE: 15 segundos en lugar de 20 (Arcade no cambia).
+- En la etiqueta superior de la tarjeta FREE, BEGINNER para automático y PROFESSIONAL para manual, al igual que Arcade.
+- El auto amarillo del modo FREE vuelve exactamente al aspecto de la versión anterior a v4, sin las franjas y los filetes añadidos en v4.
+- Se retiró el menú HTML antiguo «Automática / Manual / Largar» que aparecía brevemente antes de cargar el motor 3D. El menú real dentro del juego se mantiene.
+- Se eliminó el logo CABROTONA USA de la esquina superior izquierda, sin restaurar el antiguo título de texto. Se conserva el favicon de la pestaña.
+
+**Publicación:** subí el contenido del ZIP a la raíz del repositorio, reemplazando los archivos anteriores; si todavía está `cabrotona-logo.png` en GitHub podés borrarlo, porque ya no se utiliza. Hacé commit en `main` para desplegar en Render. Las lógicas de multijugador, CPU y físicas no se modificaron en esta actualización.

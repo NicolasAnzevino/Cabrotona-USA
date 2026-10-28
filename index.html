@@ -3,6 +3,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=5">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=5">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=5">
+<title>Cabrotona USA</title>
 </head><body>
 
 
@@ -40,10 +41,7 @@ body {
   flex-direction: column;
   gap: 14px;
 }
-.top { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.top h1 { margin: 0; font-family: var(--f-display); font-weight: 400; font-size: clamp(26px, 5vw, 38px); letter-spacing: .02em; line-height: 1; text-wrap: balance; }
-.top h1 span { color: var(--gold); }
-body[data-menu="1"] .top h1 { visibility: hidden; }
+.top { display: flex; align-items: flex-end; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
 .top p { margin: 4px 0 0; color: var(--muted); font-size: 16px; }
 .tools { display: flex; gap: 8px; align-items: center; }
 .vol { display: flex; align-items: center; gap: 8px; color: var(--paper); font: 600 15px var(--f-ui); letter-spacing: .06em; text-transform: uppercase; }
@@ -128,9 +126,6 @@ body[data-menu="1"] .top h1 { visibility: hidden; }
 
 <main class="shell">
   <header class="top">
-    <div>
-      <h1>Cabrotona <span>USA</span></h1>
-    </div>
     <div class="tools">
       <label class="vol" title="Volumen">Vol <input id="volSlider" type="range" min="0" max="100" step="1" value="100" aria-label="Volumen"></label>
       <button class="chip" id="muteBtn" type="button" aria-pressed="false">Sonido: sí</button>
@@ -141,15 +136,9 @@ body[data-menu="1"] .top h1 { visibility: hidden; }
     <div id="gl"></div>
     <canvas id="hud" aria-label="Indicadores de la carrera"></canvas>
 
-    <section class="overlay" id="menu">
-      <div class="card">
-        <div class="row" role="group" aria-label="Transmisión">
-          <button class="opt" id="optAuto" type="button" aria-pressed="true">Automática</button>
-          <button class="opt" id="optManual" type="button" aria-pressed="false">Manual (+5% velocidad)</button>
-        </div>
-        <button class="btn" id="startBtn" type="button">Largar</button>
-        <p class="best" id="bestLine" hidden></p>
-      </div>
+    <!-- El menú de transmisión antiguo fue retirado: la selección real está dentro del juego. -->
+    <section class="overlay" id="menu" hidden aria-live="polite">
+      <div class="card"><p class="lede" hidden></p></div>
     </section>
 
     <section class="overlay" id="end" hidden>
@@ -2648,11 +2637,12 @@ function drawCircuitSelect(c) {
    --------------------------------------------------------------------- */
 const MS_TIME = 10;
 const MS_X = [36, 414], MS_W = 350, MS_BY = 118, MS_PY = 206, MS_PH = 146;
+const MS_FREE_TIME = 15;
 const MS_OPT = [
   { name: 'Automatic', tag: 'BEGINNER', kmh: Math.round(MAXV * 3.6), c0: '#46a6ff', c1: '#1544c8', c2: '#9be4ff', trim: '#2b90e8', p0: '#2a64e0', p1: '#0e2a8a' },
   { name: 'Manual·4', tag: 'PROFESSIONAL', kmh: Math.round(MAXV * 3.6 * 1.05), c0: '#ff6a5a', c1: '#b50f16', c2: '#ffd0a0', trim: '#ffc61a', p0: '#e8342c', p1: '#8a0a10' }
 ];
-function msOpen() { if (!GSI && typeof Image !== 'undefined') { GSI = new Image(); GSI.src = GS_SRC; } S.ms = { t: 0, free: !!S.freeMode, tmax: S.freeMode ? 20 : MS_TIME, sel: S.freeMode ? Math.max(0, CARS.indexOf(S.freeCar)) : (S.trans === 'manual' ? 1 : 0), flash: 0, left: S.freeMode ? 20 : MS_TIME, state: 'in', chT: 0, tickN: S.freeMode ? 20 : MS_TIME, shake: 0, rects: [] }; beep(660, 0.08, 'square', 0.05); setTimeout(() => beep(990, 0.1, 'square', 0.05), 90); if (S.ms.free) msSyncFree(); }
+function msOpen() { if (!GSI && typeof Image !== 'undefined') { GSI = new Image(); GSI.src = GS_SRC; } S.ms = { t: 0, free: !!S.freeMode, tmax: S.freeMode ? MS_FREE_TIME : MS_TIME, sel: S.freeMode ? Math.max(0, CARS.indexOf(S.freeCar)) : (S.trans === 'manual' ? 1 : 0), flash: 0, left: S.freeMode ? MS_FREE_TIME : MS_TIME, state: 'in', chT: 0, tickN: S.freeMode ? MS_FREE_TIME : MS_TIME, shake: 0, rects: [] }; beep(660, 0.08, 'square', 0.05); setTimeout(() => beep(990, 0.1, 'square', 0.05), 90); if (S.ms.free) msSyncFree(); }
 function msSyncFree() { try { if (R3 && R3.sel && R3.sel.free && R3.sel.free.look !== CARS[S.ms.sel]) repaintMesh(R3.sel.free, CARS[S.ms.sel]); } catch (e) { } }
 function msMove(d) {
   const m = S.ms; if (!m || m.state === 'chosen') return;
@@ -2916,7 +2906,7 @@ function msFreeDraw(m, t, chosen, cT, eo) {
   const bgr = hx.createLinearGradient(0, MS_BY, 0, MS_BY + BH); bgr.addColorStop(0, k.c0); bgr.addColorStop(1, k.c1); hx.fillStyle = bgr; rr(BX + 4, MS_BY + 4, BW - 8, BH - 8, 6); hx.fill();
   hx.strokeStyle = k.c2; hx.lineWidth = 2; rr(BX + 6, MS_BY + 6, BW - 12, BH - 12, 5); hx.stroke();
   hx.fillStyle = man ? '#7a0a10' : '#0a2a8a'; hx.fillRect(BX + 8, MS_BY + 8, BW - 16, 15);
-  hx.font = '700 13px ' + F2; hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.fillStyle = man ? '#ffe0b0' : '#9be4ff'; hx.fillText(car.tag.split('').join(' '), BX + BW / 2, MS_BY + 16);
+  hx.font = '700 13px ' + F2; hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.fillStyle = man ? '#ffe0b0' : '#9be4ff'; hx.fillText(k.tag.split('').join(' '), BX + BW / 2, MS_BY + 16);
   hx.font = 'italic 900 34px Georgia, serif'; hx.lineJoin = 'round'; hx.lineWidth = 6; hx.strokeStyle = man ? '#4a0508' : '#06112e'; hx.strokeText(k.name, BX + BW / 2, MS_BY + 42, BW - 30); hx.fillStyle = '#f3fcff'; hx.fillText(k.name, BX + BW / 2, MS_BY + 42, BW - 30);
   hx.fillStyle = '#000'; hx.fillRect(BX + 8, MS_BY + BH - 24, BW - 16, 16);
   const kmh = Math.round(MAXV * 3.6 * car.vK * (man ? 1.05 : 1));
@@ -3080,7 +3070,8 @@ function drawHUD() {
   }
   const low = P.time < 10 && S.mode === 'race' && Math.floor(S.t * 4) % 2 === 0;
   if (!S.freeRun) itext(String(Math.ceil(Math.max(0, P.time))), HW / 2, 46, 49, low ? '#ff4d5a' : '#ffe14a', 'center', '#10224a', 5);
-  drawTach(HW / 2, 198, 113);
+  // En FREE no hay contador arriba: aprovechar ese espacio para el velocímetro.
+  drawTach(HW / 2, S.freeRun ? 155 : 198, 113);
   text('POSITION', HW - 16, 20, 17, '#ffffff', 'right', F2, 4);
   itext((S.mode === 'finish' || S.mode === 'ended' ? P.place : rank) + '/' + mpTotal(), HW - 14, 70, 52, '#27e255', 'right', '#0a2a12', 6);
   drawRadar();
@@ -3364,8 +3355,6 @@ function showMenu(keepSel) {
   demoCar = P;
   $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true;
   if (!keepSel) { selMusicStop(); musicStart(); }
-  const b = $('bestLine');
-  if (isFinite(bestRace)) { b.hidden = false; b.textContent = 'Mejor carrera: ' + fmt(bestRace); } else b.hidden = true;
   if (mpBack) mpBackToLobby();
 }
 function openSelect() {
@@ -3410,13 +3399,6 @@ function setPause(p) {
   if (S.mp) { $('pauseBox').hidden = !p; return; }   // en multijugador el mundo no se detiene
   S.paused = p; $('pauseBox').hidden = !p;
   if (p && A.c) { try { A.eg.gain.value = 0; A.ng.gain.value = 0; A.ig.gain.value = 0; } catch (e) { } }
-}
-function setTrans(t) {
-  if (S.mode !== 'menu') return;
-  S.trans = t;
-  $('optAuto').setAttribute('aria-pressed', t === 'auto' ? 'true' : 'false');
-  $('optManual').setAttribute('aria-pressed', t === 'manual' ? 'true' : 'false');
-  $('touch').dataset.trans = t;
 }
 function shift(dirn) {
   if (S.mode !== 'race' || S.trans !== 'manual' || S.paused) return;
@@ -3492,7 +3474,6 @@ document.querySelectorAll('.tbtn[data-k]').forEach(b => {
 });
 $('tUp').addEventListener('click', () => shift(1));
 $('tDown').addEventListener('click', () => shift(-1));
-$('startBtn').addEventListener('click', startRace);
 $('frame').addEventListener('pointerdown', e => { if (S.mode !== 'menu') return; if (S.mpe) return; if (!S.sel) openSelect(); else if (S.lb) lbPointer(e); else if (S.mm) mmPointer(e); else if (S.cs) csPointer(e); else if (S.ms) msPointer(e); });
 $('againBtn').addEventListener('click', showMenu);
 $('mpCreate').addEventListener('click', () => mpEnter(null));
@@ -3502,8 +3483,6 @@ $('mpName').addEventListener('keydown', e => { if (e.key === 'Enter') mpEnter(nu
 $('mpCode').addEventListener('keydown', e => { if (e.key === 'Enter') mpEnter($('mpCode').value); });
 $('resumeBtn').addEventListener('click', () => setPause(false));
 $('quitBtn').addEventListener('click', () => { S.paused = false; showMenu(); });
-$('optAuto').addEventListener('click', () => setTrans('auto'));
-$('optManual').addEventListener('click', () => setTrans('manual'));
 $('muteBtn').addEventListener('click', () => setMuted(!S.muted));
 { const vs = $('volSlider'); if (vs) { vs.value = Math.round(S.vol * 100); vs.addEventListener('input', () => setVol(vs.value / 100)); vs.addEventListener('change', () => vs.blur()); } }
 
@@ -3519,10 +3498,9 @@ try {
 } catch (err) {
   console.error(err);
   let lede = document.querySelector('#menu .lede');
-  if (!lede) { lede = document.createElement('p'); lede.className = 'lede'; const bt = $('startBtn'); bt.parentNode.insertBefore(lede, bt); }
+  if (!lede) { lede = document.createElement('p'); lede.className = 'lede'; $('menu').appendChild(lede); }
   $('menu').hidden = false;
   if (lede) { lede.hidden = false; lede.style.display = 'block'; lede.textContent = 'No se pudo iniciar el motor 3D (' + (err && err.message ? err.message : err) + '). Probá recargar la página o usar otro navegador.'; }
-  $('startBtn').disabled = true;
 }
 let last = 0, accT = 0;
 function frame(now) {
