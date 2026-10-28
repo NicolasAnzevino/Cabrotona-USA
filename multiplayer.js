@@ -18,14 +18,15 @@
         if (ws.readyState !== WebSocket.OPEN) throw new Error('Sin conexión con el servidor');
         ws.send(JSON.stringify(packet));
       };
-      const addOrChange = (id, presence, replace = false) => {
+      const addOrChange = (id, presence, replace = false, slot = null) => {
         if (typeof id !== 'string') return;
         let peer = everyone.get(id);
         if (!peer) {
-          peer = { peer: id, kind: 'viewer', sameTab: id === selfId, isMe: id === selfId, presence: {}, updatedAt: Date.now() };
+          peer = { peer: id, slot: null, kind: 'viewer', sameTab: id === selfId, isMe: id === selfId, presence: {}, updatedAt: Date.now() };
           everyone.set(id, peer);
         }
         peer.sameTab = peer.isMe = id === selfId;
+        if (Number.isInteger(slot) && slot >= 1 && slot <= 8) peer.slot = slot;
         peer.presence = replace ? { ...(presence || {}) } : { ...peer.presence, ...(presence || {}) };
         peer.updatedAt = Date.now();
       };
@@ -66,12 +67,12 @@
         if (message.type === 'joined') {
           selfId = message.id;
           everyone.clear();
-          for (const peer of message.peers || []) addOrChange(peer.id, peer.presence, true);
+          for (const peer of message.peers || []) addOrChange(peer.id, peer.presence, true, peer.slot);
           established = true;
           if (!completed) { completed = true; resolve(api); }
           notify();
         } else if (message.type === 'peer_joined') {
-          addOrChange(message.peer.id, message.peer.presence, true);
+          addOrChange(message.peer.id, message.peer.presence, true, message.peer.slot);
           notify();
         } else if (message.type === 'peer_left') {
           everyone.delete(message.id);

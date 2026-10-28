@@ -28,7 +28,7 @@ rooms = {}
 
 
 def peer_view(peer_id, state):
-    return {"id": peer_id, "presence": state["presence"]}
+    return {"id": peer_id, "slot": state["slot"], "presence": state["presence"]}
 
 
 async def relay(room_name, packet, exclude=None):
@@ -112,7 +112,9 @@ async def websocket_handler(request):
                 peer_id = secrets.token_hex(10)
                 room_name = name
                 previous = [peer_view(pid, state) for pid, state in room.items()]
-                room[peer_id] = {"ws": ws, "presence": {}}
+                used_slots = {state["slot"] for state in room.values()}
+                slot = next(n for n in range(1, MAX_PLAYERS + 1) if n not in used_slots)
+                room[peer_id] = {"ws": ws, "slot": slot, "presence": {}}
                 await ws.send_json({"type": "joined", "id": peer_id,
                                     "peers": previous + [peer_view(peer_id, room[peer_id])]})
                 await relay(room_name, {"type": "peer_joined", "peer": peer_view(peer_id, room[peer_id])}, exclude=peer_id)
