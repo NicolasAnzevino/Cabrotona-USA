@@ -267,7 +267,7 @@ const setLook = car => { LK = car; PBLUE = car.top; };
 let ST = { acc: 1, grip: 1, vK: 1 };
 const setStats = car => { ST = car ? { acc: ACC_K[car.acc], grip: GRIP_K[car.grip], vK: car.vK } : { acc: 1, grip: 1, vK: 1 }; };
 // Las cuatro cámaras de la carrera. Las dos delanteras quedan FUERA de la carrocería.
-const VIEWS = [{ n: 'trasera', dist: 8.6, h: 2.9, look: 20 }, { n: 'cerca', dist: 5.9, h: 2.0, look: 15 }, { n: 'capó', hood: true, fwd: 0.76, up: 1.68, look: 28, lookUp: 0.42, fov: 64 }, { n: 'parachoques', hood: true, fwd: 2.93, up: 0.90, look: 48, lookUp: 0.83, fov: 73 }];
+const VIEWS = [{ n: 'parachoques', hood: true, fwd: 2.93, up: 0.90, look: 48, lookUp: 0.83, fov: 73 }, { n: 'capó', hood: true, fwd: 0.76, up: 1.68, look: 28, lookUp: 0.42, fov: 64 }, { n: 'cerca', dist: 5.9, h: 2.0, look: 15 }, { n: 'trasera', dist: 6.7, h: 3.35, look: 17 }];
 /* Demo del menú al estilo Daytona USA: cortes entre tomas de TV (pan desde el costado de la pista, helicóptero, frente, auto rival al ras, etc.). */
 const DEMO_SHOTS = [
   { id: 'track', dur: 5.0 }, { id: 'front', dur: 4.2 }, { id: 'rival', dur: 4.6 }, { id: 'heli', dur: 5.0 },
@@ -290,11 +290,39 @@ let N = 0, DS = 4, L = 0;
 let CX, CY, CZ, RX, RY, RZ, UX, UY, UZ, TX, TY, TZ, KK, BB, PX, PZ;
 
 function buildTrackData() {
-  const R = 290, Z = 450, cp = [];
-  for (let z = -Z; z <= Z; z += 150) cp.push([-R, z]);
-  for (let a = 157.5; a >= 22.5; a -= 22.5) { const t = a * Math.PI / 180; cp.push([R * Math.cos(t), Z + R * Math.sin(t)]); }
-  cp.push([R, Z], [R + 14, 270], [R - 14, 90], [R + 14, -90], [R - 14, -270], [R, -Z]);
-  for (let a = -22.5; a >= -157.5; a -= 22.5) { const t = a * Math.PI / 180; cp.push([R * Math.cos(t), -Z + R * Math.sin(t)]); }
+  // Cabrotona v7 — tri-óvalo inspirado en Three Seven Speedway (Daytona USA).
+  // El orden es ANTIHORARIO visto desde la pista (tres curvas hacia IZQUIERDA).
+  // Three Seven tiene una recta de atrás larga, dos curvas amplias y una última
+  // más cerrada. La recta de meta conserva un dogleg de dirección suave.
+  // En el motor 3D X,Z el sentido izquierdo requiere una orientación negativa
+  // del polígono; estas coordenadas ya incluyen esa transformación.
+  // El asfalto continúa completamente PLANO: sin ascensos ni descensos.
+  const cp = [
+    [-355,  175], // SALIDA/META
+    [-225,  215],
+    [-100,  280],
+    [  40,  347],
+    [ 180,  386],
+    [ 305,  384], // CURVA 1
+    [ 410,  346],
+    [ 498,  267],
+    [ 539,  175],
+    [ 552,   72],
+    [ 549,  -70], // CURVA 2
+    [ 511, -178],
+    [ 428, -258],
+    [ 270, -307],
+    [ 110, -317],
+    [ -60, -319],
+    [-235, -317],
+    [-403, -307],
+    [-530, -273], // CURVA 3
+    [-605, -205],
+    [-626, -119],
+    [-604,  -35],
+    [-548,   51],
+    [-467,  110]
+  ];
   const n = cp.length, poly = [];
   for (let i = 0; i < n; i++) {
     const p0 = cp[(i + n - 1) % n], p1 = cp[i], p2 = cp[(i + 1) % n], p3 = cp[(i + 2) % n];
@@ -335,8 +363,10 @@ function buildTrackData() {
   UX = new Float32Array(N); UY = new Float32Array(N); UZ = new Float32Array(N);
   TX = new Float32Array(N); TY = new Float32Array(N); TZ = new Float32Array(N);
   for (let i = 0; i < N; i++) {
-    const b = clamp(ks[i] * 85, -0.3, 0.3); BB[i] = b;
-    const lift = HALF * Math.sin(Math.abs(b));
+    // Pista totalmente plana: no convertir cada curva en una subida/bajada.
+    // El apoyo de los autos sigue la curvatura en planta, sin elevar la ruta.
+    const b = 0; BB[i] = b;
+    const lift = 0;
     // derecha base = T x up = (-tz, 0, tx)
     const rx = -tz[i], rz = tx[i];
     CX[i] = PX[i]; CY[i] = lift; CZ[i] = PZ[i];
@@ -363,7 +393,7 @@ const cdiff = v => wrap(v + L / 2, L) - L / 2;
    --------------------------------------------------------------------- */
 const keys = { up: false, down: false, left: false, right: false };
 const touch = { up: false, down: false, left: false, right: false };
-const S = { mode: 'menu', paused: false, trans: 'auto', view: 1, muted: false, cd: 0, t: 0, finT: 0, go: 0, introT: 0, resultPlace: 20, demoT: 0, sel: false, holdFov: null, curve: null, cs: null, course: 0 };
+const S = { mode: 'menu', paused: false, trans: 'auto', view: 1, muted: false, cd: 0, t: 0, finT: 0, finLane: null, finCruise: 0, go: 0, introT: 0, resultPlace: 20, demoT: 0, sel: false, holdFov: null, curve: null, cs: null, course: 0 };
 const P = {};
 const DEMO = { k: -1, cyc: -1, anchor: null, rival: null, away: null };
 let cars = [], msgs = [], finCount = 0, raceT = 0, bestRace = Infinity, demoCar = null;
@@ -852,21 +882,8 @@ function sim(dt) {
     if (S.finT + TO_OFF >= END_TOTAL) showMenu();
     return;
   }
-  if (S.mode === 'finish' && S.finT >= END_RES0) {
-    // RESULTS y GAME OVER: el mundo queda congelado (autos, tiempo y motor).
-    S.finT += dt;
-    if (P.v !== 0) {
-      P.v = 0; P.acc = 0; P.thr = 0; P.braking = false;
-      cars.forEach(c => { c.v = 0; c.run = false; c.ddt = 0; c.lv = 0; });
-      if (A.c) {
-        A.eg.gain.setTargetAtTime(0, A.c.currentTime, .025);
-        A.ig.gain.setTargetAtTime(0, A.c.currentTime, .025);
-        A.ng.gain.setTargetAtTime(0, A.c.currentTime, .025);
-      }
-    }
-    if (S.finT >= END_TOTAL) showMenu();
-    return;
-  }
+  // Tras cruzar la meta, la simulación sigue también debajo de RESULTS y GAME OVER.
+  // El auto se conduce solo hasta que termine la secuencia; nunca se congela en pantalla.
   if (S.mode === 'menu') {
     let introTarget = 52 + Math.sin(S.t * 0.33) * 4;
     if (S.curve && S.demoT < AWAY_AT) introTarget = clamp((S.curve.target - P.dist) / Math.max(0.4, AWAY_AT - S.demoT), 36, 68);   // llega a la curva justo en 1:25
@@ -880,7 +897,12 @@ function sim(dt) {
   if (racing) inp = readInput();
   else {
     S.finT += dt;
-    inp = autoDrive(S.mode === 'timeout' ? 26 : Math.max(34, 56 - S.finT * 3));
+    if (S.mode === 'finish') {
+      if (S.finLane == null) S.finLane = P.d;
+      if (!(S.finCruise > 0)) S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
+      const cruise = clamp(S.finCruise + Math.min(10, S.finT * 1.6), 46, MAXV * 0.98);
+      inp = autoDrive(cruise, S.finLane);
+    } else inp = autoDrive(26);
     P.inv = Math.max(P.inv, 0.3);
   }
   P.prevDist = P.dist; P.prevD = P.d;
@@ -899,7 +921,9 @@ function sim(dt) {
       const isBest = lt < P.bestLap; if (isBest) P.bestLap = lt;
       if (lapNow >= LAPS) {
         S.mode = 'finish'; P.finished = true; P.place = S.mp ? mpFinPlace() : ++finCount; S.finT = 0.001;
+        S.finLane = P.d; S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
         msgs = []; beep(880, 0.15); setTimeout(() => beep(1320, 0.3), 160);
+        if (A.c) { const t = A.c.currentTime; A.eg.gain.setTargetAtTime(0, t, .05); A.ig.gain.setTargetAtTime(0, t, .05); A.ng.gain.setTargetAtTime(0, t, .04); }
       } else {
         if (!S.freeRun && !S.mp) { P.time += BONUS; S.te = { t: 0, best: isBest, lt }; } beep(1040, 0.12); setTimeout(() => beep(1560, 0.2), 120); setTimeout(() => beep(2080, 0.25), 260);
       }
@@ -1844,10 +1868,23 @@ function updateCamera(st, dt, snap) {
     px = po.ps[0]; py = po.ps[1]; pz = po.ps[2]; lx = po.lk[0]; ly = po.lk[1]; lz = po.lk[2]; fov = po.fv;
     frameAt(st.dist);
   } else if (endCam) {
-    const o = clamp(S.finT / 4.4, 0, 1), th = o * o * (3 - 2 * o) * Math.PI, ct = Math.cos(th), stt = Math.sin(th), dd = 8.4, hh = 3.0 - 1.0 * stt;
-    px = bx - fx * dd * ct + f.rx * dd * 0.75 * stt + f.ux * hh; py = by - fy * dd * ct + f.ry * dd * 0.75 * stt + f.uy * hh; pz = bz - fz * dd * ct + f.rz * dd * 0.75 * stt + f.uz * hh;
-    lx = bx + f.ux * 1.0; ly = by + f.uy * 1.0; lz = bz + f.uz * 1.0;
-    fov = 64;
+    // Plano final Daytona: cámara 3 detrás -> órbita real de 180° -> delante del auto,
+    // mirando hacia él mientras continúa circulando automáticamente.
+    const t = clamp(S.finT / 4.0, 0, 1);
+    const e = t * t * (3 - 2 * t); // ease-in-out, evita un giro brusco
+    const ang = Math.PI * e, ct = Math.cos(ang), stt = Math.sin(ang);
+    const distance = 5.9, height = 2.05;
+    // Primera posición: cámara 3 (persecución), última: enfrente del Gallop.
+    px = bx - fx * distance * ct + f.rx * distance * stt + f.ux * height;
+    py = by - fy * distance * ct + f.ry * distance * stt + f.uy * height;
+    pz = bz - fz * distance * ct + f.rz * distance * stt + f.uz * height;
+    // Al principio mira adelante como la tercera vista; después mira al auto,
+    // de modo que se vean la parrilla, el parabrisas y la carrocería durante RESULTS.
+    const lookAhead = 15 * Math.pow(1 - e, 3) + 0.25 * e;
+    lx = bx + fx * lookAhead + f.ux * 0.95;
+    ly = by + fy * lookAhead + f.uy * 0.95;
+    lz = bz + fz * lookAhead + fuz * 0.95;
+    fov = 62 + 10 * (1 - e);
   } else if (v.hood) {
     px = bx + fx * v.fwd + f.ux * v.up; py = by + fy * v.fwd + f.uy * v.up; pz = bz + fz * v.fwd + f.uz * v.up;
     lx = bx + fx * v.look + f.ux * v.lookUp; ly = by + fy * v.look + f.uy * v.lookUp; lz = bz + fz * v.look + f.uz * v.lookUp;
@@ -1923,14 +1960,18 @@ function drawTach(cx, cy, r) {
 }
 const MINI = { x0: HW - 142, y0: 214, w: 120, h: 76, sc: 1, ox: 0, oz: 0, ready: false };
 function miniInit() {
-  let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
-  for (let i = 0; i < N; i++) { minX = Math.min(minX, PX[i]); maxX = Math.max(maxX, PX[i]); minZ = Math.min(minZ, PZ[i]); maxZ = Math.max(maxZ, PZ[i]); }
-  MINI.sc = Math.min(MINI.w / (maxZ - minZ), MINI.h / (maxX - minX));
-  MINI.ox = MINI.x0 + (MINI.w - (maxZ - minZ) * MINI.sc) / 2 - minZ * MINI.sc;
-  MINI.oz = MINI.y0 + (MINI.h - (maxX - minX) * MINI.sc) / 2 - minX * MINI.sc;
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+  for (let i = 0; i < N; i++) { const sx = PX[i], sy = -PZ[i]; minX = Math.min(minX, sx); maxX = Math.max(maxX, sx); minY = Math.min(minY, sy); maxY = Math.max(maxY, sy); }
+  MINI.sc = Math.min(MINI.w / Math.max(1, maxX - minX), MINI.h / Math.max(1, maxY - minY));
+  MINI.ox = MINI.x0 + (MINI.w - (maxX - minX) * MINI.sc) / 2 - minX * MINI.sc;
+  MINI.oz = MINI.y0 + (MINI.h - (maxY - minY) * MINI.sc) / 2 - minY * MINI.sc;
   MINI.ready = true;
 }
-function miniPt(dist) { const i = Math.floor(wrap(dist, L) / DS) % N; return [PZ[i] * MINI.sc + MINI.ox, PX[i] * MINI.sc + MINI.oz]; }
+function miniPt(dist) {
+  const i = Math.floor(wrap(dist, L) / DS) % N;
+  // Reflejo horizontal del trazado (no del texto TRAFFIC ni del entorno 3D).
+  return [2 * MINI.x0 + MINI.w - (PX[i] * MINI.sc + MINI.ox), -PZ[i] * MINI.sc + MINI.oz];
+}
 function drawRadar() {
   const x = HW - 146, y = 84, w = 132, h = 104;
   hx.fillStyle = 'rgba(6,14,40,.62)'; hx.fillRect(x, y, w, h);
@@ -1954,7 +1995,7 @@ function drawMini() {
   if (!MINI.ready) miniInit();
   hx.lineJoin = 'round';
   hx.strokeStyle = 'rgba(255,255,255,0.8)'; hx.lineWidth = 7; hx.beginPath();
-  for (let i = 0; i <= N; i += 6) { const j = i % N, x = PZ[j] * MINI.sc + MINI.ox, y = PX[j] * MINI.sc + MINI.oz; if (i === 0) hx.moveTo(x, y); else hx.lineTo(x, y); }
+  for (let i = 0; i <= N; i += 6) { const j = i % N, x = 2 * MINI.x0 + MINI.w - (PX[j] * MINI.sc + MINI.ox), y = -PZ[j] * MINI.sc + MINI.oz; if (i === 0) hx.moveTo(x, y); else hx.lineTo(x, y); }
   hx.closePath(); hx.stroke();
   hx.strokeStyle = '#101830'; hx.lineWidth = 4; hx.stroke();
   const s0 = miniPt(0); hx.fillStyle = '#fff'; hx.fillRect(s0[0] - 2, s0[1] - 6, 4, 12);
@@ -2097,10 +2138,13 @@ function csStroke(g, pts, closed) {
 }
 function csBuildArt() {
   const out = [], pts = [];
-  // BEGINNER: el trazado real de este juego, girado para que la recta quede horizontal
+  // BEGINNER: vista previa horizontal y ajustada al cuadro, sin recortes.
   { const t = csTerrain('#1c5a1c', ['#2f7a28', '#3f8f31', '#0f3f12', '#4aa03a'], 12345, true), g = t.g;
-    const sc = Math.min((CS_W - 26) / 1480, (CS_MH - 26) / 612);
-    for (let i = 0; i < N; i += 3) pts.push([CS_W / 2 + PZ[i] * sc, CS_MH / 2 - PX[i] * sc]);
+    let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9; const raw = [];
+    for (let i = 0; i < N; i += 3) { const sx = PX[i], sy = -PZ[i]; raw.push([sx, sy]); minX = Math.min(minX, sx); maxX = Math.max(maxX, sx); minY = Math.min(minY, sy); maxY = Math.max(maxY, sy); }
+    const sc = Math.min((CS_W - 26) / Math.max(1, maxX - minX), (CS_MH - 26) / Math.max(1, maxY - minY));
+    const ox = CS_W / 2 - (minX + maxX) * 0.5 * sc, oy = CS_MH / 2 - (minY + maxY) * 0.5 * sc;
+    for (const p of raw) pts.push([p[0] * sc + ox, p[1] * sc + oy]);
     csStroke(g, pts, true);
     g.fillStyle = '#fff'; g.fillRect(pts[0][0] - 1.5, pts[0][1] - 6, 3, 12);
     out.push({ c: t.c, pts }); }
@@ -2333,7 +2377,7 @@ function startRaceMP(ord) {
   S.freeMode = false; S.freeRun = false; S.freeCar = null; setStats(null);
   S.trans = NET.t; S.mp = true; S.mySeat = mpSeat(me); repaintPlayer(S.trans); S.holdFov = null; resCache = null;
   if (document.body) document.body.dataset.menu = '';
-  S.view = 1; applyView();
+  S.view = 2; applyView();
   resetPlayer(); makeCars(); finCount = 0; raceT = 0; msgs = []; demoCar = null;
   const back = PACE * CD_TOTAL, g = mpGrid(myK);
   P.d = g.d; S.myLane = g.d; P.v = PACE; P.dist = g.dist - back; P.gear = 1; P.steer = 0; P.psi = 0; P.phi = 0; P.inv = CD_TOTAL + 0.5;
@@ -3278,7 +3322,7 @@ function render(dt) {
   else R3.renderer.render(R3.scene, R3.camera);
   drawHUD();
   if (S.mode === 'menu' && S.ms && R3.sel && !window.__no3d) { try { renderSelectCars(); } catch (e) { if (!renderSelectCars.err) { renderSelectCars.err = true; console.error(e); } } }
-  audioTick(S.mode === 'race' || S.mode === 'countdown' || S.mode === 'finish');
+  audioTick(S.mode === 'race' || S.mode === 'countdown');
 }
 
 /* ---------------------------------------------------------------------
@@ -3369,7 +3413,7 @@ function closeSelect() {
 function startRace() {
   initAudio(); musicStop(); selMusicStop(); S.sel = false; S.mm = null; S.cs = null; S.ms = null; S.gs = null; repaintPlayer(S.trans); S.holdFov = null; resCache = null;
   if (document.body) document.body.dataset.menu = '';
-  S.view = 1; applyView();
+  S.view = 2; applyView();
   resetPlayer(); makeCars(); finCount = 0; raceT = 0; msgs = []; demoCar = null;
   S.freeRun = !!S.freeMode; if (!S.freeRun) S.freeCar = null; setStats(S.freeRun ? S.freeCar : null); if (S.freeRun) P.time = 1e9;   // FREE MODE: sin tiempo
   /* largada rodante: todos en movimiento; el #41 cruza la línea de salida justo al "GO" */

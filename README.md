@@ -15,7 +15,7 @@ Con el retroceso solicitado, la **simulación local se ralentiza o pausa cuando 
 
 ## Publicar
 
-1. Extraer el ZIP y subir los seis archivos de la raíz al repositorio `NicolasAnzevino/Cabrotona-USA` rama `main`, reemplazando los anteriores.
+1. Extraer el ZIP y subir todos los archivos de la raíz al repositorio `NicolasAnzevino/Cabrotona-USA` rama `main`, reemplazando los anteriores.
 2. Hacer un commit. Render desplegará automáticamente el cambio.
 3. Comprobar que aparezca `Live` en Events y recargar la página sin caché.
 
@@ -51,3 +51,32 @@ Se reemplazaron únicamente las imágenes de favicon por la nueva imagen proporc
 - Se eliminó el logo CABROTONA USA de la esquina superior izquierda, sin restaurar el antiguo título de texto. Se conserva el favicon de la pestaña.
 
 **Publicación:** subí el contenido del ZIP a la raíz del repositorio, reemplazando los archivos anteriores; si todavía está `cabrotona-logo.png` en GitHub podés borrarlo, porque ya no se utiliza. Hacé commit en `main` para desplegar en Render. Las lógicas de multijugador, CPU y físicas no se modificaron en esta actualización.
+
+
+## v6 — Three Seven Speedway (sin desniveles)
+
+- Primer circuito rehecho como tri-óvalo asimétrico inspirado en la pista Beginner de Daytona USA: recta trasera, una recta principal con un solo cambio de dirección suave, y una curva final más cerrada.
+- Geometría **completamente plana**, sin subidas ni bajadas y sin cambiar la altura de los autos por la curvatura.
+- Se conserva el orden de cámaras **1 parachoques, 2 capó, 3 cercana, 4 trasera elevada** y la cámara 3 predeterminada.
+- No se modificó el servidor ni la lógica del multijugador. Todos los jugadores deberán usar la nueva versión del cliente para que el circuito coincida.
+- Diseño aproximado basado en referencias del juego, no copia de sus datos internos.
+
+
+## v7 — Pista orientada a la izquierda y más larga
+
+- Nuevo trazado: aprox. 3099 m por vuelta (v6: 2328 m), 3 curvas principales de izquierda, recta posterior larga y dogleg en recta de meta.
+- Altura constante Y=0; se mantienen cámara 3, HUD y multijugador de v6.
+- Solo se modificó la geometría del circuito dentro del HTML; antes de jugar online, todos deben actualizar la página.
+
+
+## v9 — Minimapa como referencia y cámara final de 180°
+
+- El minimapa durante el gameplay se refleja **horizontalmente**, como en las dos capturas del usuario.
+  Los puntos del auto, rivales y la salida se reflejan junto a la pista. El texto TRAFFIC permanece legible.
+- La cámara final arranca cerca de la vista 3, **gira 180° alrededor del Gallop** y termina
+  enfrente del vehículo, mirando hacia su carrocería mientras sigue manejándose automáticamente.
+- El piloto automático mantiene la velocidad durante GOAL, RESULTS y GAME OVER,
+  sin la congelación a 8 segundos de la versión anterior.
+- El motor se silencia al cruzar la meta; la breve fanfarria de meta no se altera.
+- Pista Three Seven de v7, cámara 3 de largada, UI de selección horizontal de v8 y multijugador se conservan.
+- Se incluyen otra vez los archivos del servidor que faltaban en el ZIP de v8.
