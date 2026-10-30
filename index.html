@@ -906,6 +906,39 @@ function cinePlan(c) {
   c.lookH = c.place === 1 ? 1.45 : 1.1;
   c.wh = c.place === 1 ? 5.9 : 7.4;   // ancho horizontal visible al detenerse: en el 1.º el auto casi llena la pantalla
 }
+// Arcade y FREE usan el final del index de referencia, sin las escenas por puesto del online.
+function beginSoloFinish(place, completed = true) {
+  if (S.mp || (S.mode !== 'race' && S.mode !== 'countdown')) return;
+  S.resultPlace = Math.max(1, place || 1);
+  P.place = S.resultPlace;
+  P.finished = !!completed;
+  S.endGoal = !!completed;
+  S.finT = 0.001;
+  S.cine = null;
+  S.te = null;
+  S.view = 2; applyView();
+  if (R3) R3.camAng = 0;
+  msgs = [];
+  if (completed) {
+    // Igual al index adjunto: GOAL, conducción automática y giro de 180 grados.
+    S.mode = 'finish';
+    S.finLane = P.d;
+    S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
+    beep(880, 0.15); setTimeout(() => beep(1320, 0.3), 160);
+  } else {
+    // Igual al index adjunto: el tiempo agotado congela carrera y cámara;
+    // salta a RESULTS, sin giro ni cinematográfica multijugador.
+    S.mode = 'timeout';
+    P.v = 0; P.acc = 0; P.thr = 0; P.braking = false;
+    for (const c of cars) { c.v = 0; c.run = false; c.ddt = 0; c.lv = 0; }
+  }
+  if (A.c) { const now = A.c.currentTime;
+    A.eg.gain.setTargetAtTime(0, now, .04);
+    A.ig.gain.setTargetAtTime(0, now, .04);
+    A.ng.gain.setTargetAtTime(0, now, .04);
+  }
+}
+
 function beginFinish(place, completed = true) {
   if (S.mode === 'finish') {
     P.place = place; S.resultPlace = place;
@@ -913,12 +946,20 @@ function beginFinish(place, completed = true) {
     return;
   }
   P.finished = true; P.place = place; S.resultPlace = place; S.endGoal = !!completed;
-  S.mode = 'finish'; S.finT = 0.001; S.view = 2; applyView();
-  if (R3) R3.camAng = 0;
-  const v0 = clamp(Math.max(P.v, 43), 43, 75);
-  S.cine = { place, side: P.d < 0 ? -1 : 1, v0, start: P.dist, d0: P.d, event: false, roll: 0, lift: 0,
-    hideCar: false, frozenTime: raceT, look: null, plan: 0 };
-  cinePlan(S.cine);
+  S.mode = 'finish'; S.finT = 0.001;
+  // Arcade y FREE no reproducen endings: se muestra RESULTS fijo con la cámara que el jugador eligió.
+  // Únicamente las salas online crean el plan de cámara y las maniobras.
+  if (S.mp) {
+    S.view = 2; applyView();
+    if (R3) R3.camAng = 0;
+    const v0 = clamp(Math.max(P.v, 43), 43, 75);
+    S.cine = { place, side: P.d < 0 ? -1 : 1, v0, start: P.dist, d0: P.d, event: false, roll: 0, lift: 0,
+      hideCar: false, frozenTime: raceT, look: null, plan: 0 };
+    cinePlan(S.cine);
+  } else {
+    S.cine = null;
+    P.v = 0; P.acc = 0; P.thr = 0; P.rpm = 0; P.braking = false;
+  }
   S.te = null; msgs = []; P.braking = false;
   if (A.c) { const t = A.c.currentTime;
     A.eg.gain.setTargetAtTime(0, t, 0.045);
@@ -942,12 +983,14 @@ function endingTick(dt) {
     phi = side * 0.30 * Math.sin(Math.PI * clamp((t - tb) / (Ts * 0.55), 0, 1)) - side * 0.42 * cSm(t, tb + Ts * 0.45, tb + Ts);   // cola hacia la valla y la trompa termina girada hacia la cámara (3/4 frontal)
     acc = t > tb && u < 1 ? -70 : 0;
   } else if (c.place === 2) {
-    // Derrape de costado frente a la cámara, contravolante y salida.
-    const dr = cSm(t, tb, tb + 0.8), back = cSm(t, tb + 2.0, tb + 3.0);
-    v = v0 * 0.5 * (1 + (1 - cSm(t, tb, tb + 2.0))) * (1 - cSm(t, tb + 2.0, tb + 3.8));   // derrape y se detiene lejos de la cámara
-    d = lerp(lerp(d0, side * (WALL - 5.2), cSm(t, tb, tb + 1.8)), d0 * 0.4, cSm(t, tb + 2.4, tb + 4.2));
-    phi = side * (1.2 * dr * (1 - back) - 0.2 * Math.sin(Math.PI * clamp((t - tb - 2.2) / 1.2, 0, 1)));
-    acc = t > tb && t < tb + 2.4 ? -45 : 0;
+    // Derrapa hacia el costado, recupera la dirección y se queda QUIETO.
+    // La posición lateral termina su transición antes de frenar: nada de deslizarse
+    // horizontalmente mientras RESULTS está en pantalla.
+    const skid = cSm(t, tb, tb + 0.70), settle = cSm(t, tb + 1.35, tb + 2.35);
+    v = t < tb ? v0 : v0 * (1 - cSm(t, tb, tb + 3.15));
+    d = lerp(d0, side * (WALL - 5.2), cSm(t, tb, tb + 2.25));
+    phi = side * (1.12 * skid * (1 - settle) + 0.05 * settle);
+    acc = t > tb && t < tb + 3.15 ? -38 : 0;
     if (!c.event && t >= tb + 0.15) { c.event = true; thump(0.25); beep(520, 0.7, 'sawtooth', 0.04); }
   } else if (c.place === 3) {
     // Se tira contra la valla, rebota y se arrastra unos metros.
@@ -960,15 +1003,17 @@ function endingTick(dt) {
     if (t >= tI + 0.6) phi = side * lerp(-0.38, -0.3, cSm(t, tI + 0.6, tI + 2));
     if (!c.event && t >= tI) { c.event = true; P.damage = Math.max(P.damage, .68); P.damageSide = side; P.crash = .7; thump(.7); }
   } else {
-    // Choque fuerte y tres vueltas de campana; termina sobre las ruedas, parado.
+    // Impacto con la valla + UN vuelco pesado (en lugar de girar como un trompo).
+    // El coche pierde velocidad durante el vuelco, rebota sobre el asfalto y se asienta.
     const tI = tb + CINE_IMPACT[4], hit = clamp((t - tb) / CINE_IMPACT[4], 0, 1);
-    const Tf = 2.8, u = clamp((t - tI) / Tf, 0, 1), eo = 1 - (1 - u) * (1 - u);
-    v = t < tI ? v0 : v0 * 0.85 * (1 - u);
+    const Tf = 3.4, u = clamp((t - tI) / Tf, 0, 1);
+    v = t < tI ? v0 : v0 * 0.72 * (1 - cSm(t, tI, tI + Tf));
     const wallHit = side * (WALL - 1.25);
-    d = t < tI ? lerp(d0, wallHit, Math.pow(hit, 2.2)) : wallHit - side * 8 * cSm(t, tI, tI + 1.8);
-    phi = t < tI ? side * 0.5 * hit : side * 0.5 * Math.sin(Math.PI * u) * (1 - 0.3 * u);
-    c.roll = t < tI ? 0 : Math.PI * 6 * eo;
-    c.lift = t < tI ? 0 : Math.abs(Math.sin(c.roll * 0.5)) * 1.7 * (1 - u * u);
+    d = t < tI ? lerp(d0, wallHit, Math.pow(hit, 2.2))
+      : lerp(wallHit, wallHit - side * 4.5, cSm(t, tI, tI + Tf));
+    phi = t < tI ? side * 0.42 * hit : side * (0.44 * (1 - cSm(t, tI, tI + Tf)));
+    c.roll = t < tI ? 0 : -side * TAU * cSm(t, tI + 0.08, tI + Tf);
+    c.lift = t < tI ? 0 : 1.55 * Math.pow(Math.sin(c.roll * 0.5), 2) * (1 - 0.22 * u);
     if (!c.event && t >= tI) { c.event = true; P.damage = Math.max(P.damage, .85); P.damageSide = side; P.crash = .8; thump(.9); beep(120, 0.45, 'sawtooth', 0.12); }
   }
   P.v = Math.max(0, v); P.d = clamp(d, -WALL + 1.05, WALL - 1.05); P.phi = phi; P.psi = 0;
@@ -979,10 +1024,14 @@ function endingTick(dt) {
 }
 function sim(dt) {
   const racing = S.mode === 'race';
-  if (S.mode === 'finish') { endingTick(dt); return; }
-  // Los finales por tiempo agotado también entran a 'finish' y muestran su cinematográfica.
-  // Tras cruzar la meta, la simulación sigue también debajo de RESULTS y GAME OVER.
-  // El auto se conduce solo hasta que termine la secuencia; nunca se congela en pantalla.
+  if (S.mode === 'timeout' && !S.mp) {
+    S.finT += dt;
+    if (S.finT + SOLO_TO_OFF >= SOLO_END_TOTAL) showMenu();
+    return;
+  }
+  if (S.mode === 'finish' && S.mp) { endingTick(dt); return; }
+  // En Arcade/Free la pantalla de resultados queda quieta; en multiplayer la
+  // simulación de cierre está a cargo de endingTick y su cámara personalizada.
   if (S.mode === 'menu') {
     let introTarget = 52 + Math.sin(S.t * 0.33) * 4;
     if (S.curve && S.demoT < AWAY_AT) introTarget = clamp((S.curve.target - P.dist) / Math.max(0.4, AWAY_AT - S.demoT), 36, 68);   // llega a la curva justo en 1:25
@@ -1057,7 +1106,7 @@ function sim(dt) {
           // El servidor espera 2 segundos desde la victoria y recién entonces
           // activa la cinematográfica de todos con la posición definitiva.
           P.finished = true;
-        } else beginFinish(++finCount, true);
+        } else beginSoloFinish(++finCount, true);
       } else {
         if (!S.freeRun && !S.mp) { P.time += BONUS; S.te = { t: 0, best: isBest, lt }; } beep(1040, 0.12); setTimeout(() => beep(1560, 0.2), 120); setTimeout(() => beep(2080, 0.25), 260);
       }
@@ -1067,11 +1116,12 @@ function sim(dt) {
       // En una sala online solamente el servidor declara el cierre y ordena
       // los puestos. En Arcade la cinematográfica empieza de inmediato.
       if (!S.mp) {
-        beginFinish(rankNow(), false);
+        beginSoloFinish(rankNow(), false);
         beep(220, 0.30, 'sawtooth', .06);
       }
     }
   }
+  if (!S.mp && S.mode === 'finish' && S.finT >= SOLO_END_TOTAL) showMenu();
 }
 function step(dt) {
   S.t += dt;
@@ -1959,7 +2009,8 @@ function updateCamera(st, dt, snap) {
   const fx = f.tx * ca + f.rx * sa, fy = f.ty * ca + f.ry * sa, fz = f.tz * ca + f.rz * sa;
   const fux = f.ux, fuy = f.uy, fuz = f.uz;   // copia: frameAt() reutiliza el mismo objeto
   const v = VIEWS[S.view];
-  const endCam = st === P && P.finished && S.finT > 0 && S.mode !== 'race' && S.mode !== 'countdown';
+  const endCam = st === P && S.mode === 'finish' && !!S.cine && P.finished && S.finT > 0;
+  const soloEndCam = !S.mp && st === P && S.mode === 'finish' && P.finished && S.finT > 0;
   const shake = S.mode === 'finish' ? 0 : (P.crash > 0 && S.mode !== 'menu' ? P.crash * 0.5 : 0) + (st.v > 60 ? (st.v - 60) * 0.0012 : 0);
   let px, py, pz, lx, ly, lz, fov;
   if (S.mode === 'menu') {
@@ -2042,6 +2093,20 @@ function updateCamera(st, dt, snap) {
     if (!po) po = pose(where());
     px = po.ps[0]; py = po.ps[1]; pz = po.ps[2]; lx = po.lk[0]; ly = po.lk[1]; lz = po.lk[2]; fov = po.fv;
     frameAt(st.dist);
+  } else if (soloEndCam) {
+    // Plano exacto de la referencia para ARCADE y FREE: vista 3 -> órbita de 180°
+    // que termina frente al auto, mientras éste se maneja solo.
+    const u = clamp(S.finT / 4.0, 0, 1), e = u * u * (3 - 2 * u);
+    const ang = Math.PI * e, ct = Math.cos(ang), stt = Math.sin(ang);
+    const distance = 5.9, height = 2.05;
+    px = bx - fx * distance * ct + f.rx * distance * stt + f.ux * height;
+    py = by - fy * distance * ct + f.ry * distance * stt + f.uy * height;
+    pz = bz - fz * distance * ct + f.rz * distance * stt + f.uz * height;
+    const lookAhead = 15 * Math.pow(1 - e, 3) + 0.25 * e;
+    lx = bx + fx * lookAhead + f.ux * 0.95;
+    ly = by + fy * lookAhead + f.uy * 0.95;
+    lz = bz + fz * lookAhead + f.uz * 0.95;
+    fov = 62 + 10 * (1 - e);
   } else if (endCam) {
     // Cámara fija de pista con paneo y zoom de operador: sigue al auto sin moverse del lugar.
     const c = S.cine;
@@ -3264,7 +3329,8 @@ function drawHUD() {
     return;
   }
   const te = endClock();
-  if (te !== null && te >= END_RES0) { drawEnding(te); return; }   // RESULTS aparece desde el primer fotograma del ending
+  if (te !== null && te >= (S.mp ? END_RES0 : SOLO_END_RES0)) { drawEnding(te); return; }
+  // En single-player, GOAL y el HUD se mantienen durante el giro inicial.
   const rank = S.mode === 'timeout' ? S.resultPlace : rankNow();
   const racing = S.mode === 'race' || S.mode === 'countdown';
   const sp = clamp((P.v - 55) / 35, 0, 1);
@@ -3317,7 +3383,8 @@ function drawHUD() {
   if (S.te && S.mode === 'race') drawTimeExt(S.te);
   if (S.mode === 'countdown') { const n = Math.ceil(S.cd); if (n > 0 && n <= 3) itext(String(n), HW / 2, 298, 124, '#ffe14a', 'center', '#10224a', 10); }
   else if (S.go > 0) itext('GO!', HW / 2, 330, 120, '#7dff9a', 'center', '#0a2a12', 10);
-  if (S.mode === 'finish' && S.endGoal && S.finT < GOAL_END) drawGoal(S.finT);
+  if (!S.mp && S.mode === 'finish' && S.endGoal && S.finT < SOLO_GOAL_END) soloDrawGoal(S.finT);
+  else if (S.mp && S.mode === 'finish' && S.endGoal && S.finT < GOAL_END) drawGoal(S.finT);
 }
 function ordinal(n) { return n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th'); }
 function gradText(str, x, y, size, stops, stroke, sw, spacing, italic) {
@@ -3341,7 +3408,19 @@ function gradText(str, x, y, size, stops, stroke, sw, spacing, italic) {
    --------------------------------------------------------------------- */
 const END_RES0 = 0, END_GO0 = 4.0, END_TOTAL = 12.0, GOAL_END = 0;   // VIDEO: RESULTS desde el inicio, GAME OVER tras la maniobra
 const TO_OFF = 0;
-function endClock() { return S.mode === 'timeout' ? S.finT + TO_OFF : (S.mode === 'finish' ? S.finT : null); }
+// Solo Arcade/FREE: tiempos del index (4).html. Online conserva los suyos.
+const SOLO_END_RES0 = 8.0, SOLO_END_RES1 = 11.6;
+const SOLO_END_GO0 = 11.9, SOLO_END_TOTAL = 16.8, SOLO_GOAL_END = 7.6;
+const SOLO_TO_OFF = SOLO_END_RES0 - 0.3;
+function soloDrawGoal(t) {
+  const k = clamp(t / 0.4, 0, 1), sc = 1 + (1 - k) * 2.2 + Math.sin(t * 7) * 0.02;
+  hx.globalAlpha = k * (t > SOLO_GOAL_END - 0.5 ? clamp((SOLO_GOAL_END - t) / 0.5, 0, 1) : 1);
+  hx.save(); hx.translate(HW / 2, HH * 0.5); hx.scale(sc, sc);
+  itext('GOAL', 0, 44, 150, '#ffd200', 'center', '#d1121b', 12);
+  hx.restore(); hx.globalAlpha = 1;
+}
+
+function endClock() { return S.mode === 'timeout' ? S.finT + (S.mp ? TO_OFF : SOLO_TO_OFF) : (S.mode === 'finish' ? S.finT : null); }
 function tw(str, size) { hx.save(); hx.font = '400 ' + size + 'px ' + F1; const w = hx.measureText(str).width; hx.restore(); return w; }
 function drawGoal(t) {
   const k = clamp(t / 0.4, 0, 1), sc = 1 + (1 - k) * 2.2 + Math.sin(t * 7) * 0.02;
@@ -3414,8 +3493,86 @@ function drawGameOver(t, alpha) {
     k++;
   }
 }
+function soloDrawResultsRaw(place) {
+  // Bloque RESULTS + posición en coordenadas nominales (el centrado real se mide sobre los píxeles dibujados).
+  const sR = 100, sN = 190, sS = 86, capR = sR * 0.74, capN = sN * 0.72, gap = 30;
+  const top = (HH - (capR + gap + capN)) / 2, yR = top + capR, yN = yR + gap + capN;
+  const num = String(place), suf = ordinal(place).slice(num.length);
+  const w1 = tw(num, sN), w2 = tw(suf, sS), g2 = 8, tot = w1 + g2 + w2, x0 = HW / 2 - tot / 2;
+  gradText('RESULTS', HW / 2, yR, sR, ['#ff7a00', '#ffb31b', '#fff2a3', '#ffb31b', '#ff860f'], '#562100', 9, 3, true);
+  gradText(num, x0 + w1 / 2, yN, sN, ['#fff6c9', '#9bc8ff', '#2553df', '#1537aa'], '#10214d', 11, 0, true);
+  gradText(suf, x0 + w1 + g2 + w2 / 2, yN, sS, ['#ffe48d', '#ffb223', '#ff8a1b'], '#5a2800', 8, 0, true);
+}
+let soloResCache = null, soloResOff = null;
+function soloResultsOffset(place) {
+  // Mide el recuadro real de tinta (con la fuente que se esté usando) y devuelve cuánto moverlo para centrarlo en pantalla.
+  if (soloResCache && soloResCache.place === place) return soloResCache;
+  let dx = 0, dy = 0;
+  try {
+    if (!soloResOff) { soloResOff = document.createElement('canvas'); soloResOff.width = HW; soloResOff.height = HH; }
+    const oc = soloResOff.getContext('2d', { willReadFrequently: true }), keep = hx;
+    oc.clearRect(0, 0, HW, HH); hx = oc;
+    try { soloDrawResultsRaw(place); } finally { hx = keep; }
+    const d = oc.getImageData(0, 0, HW, HH).data;
+    let x0 = HW, x1 = -1, y0 = HH, y1 = -1;
+    for (let y = 0; y < HH; y++) for (let x = 0; x < HW; x++) {
+      if (d[(y * HW + x) * 4 + 3] > 16) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+    if (x1 >= x0 && y1 >= y0) { dx = HW / 2 - (x0 + x1 + 1) / 2; dy = HH / 2 - (y0 + y1 + 1) / 2; }
+  } catch (e) { dx = 0; dy = 0; }
+  soloResCache = { place, dx, dy };
+  return soloResCache;
+}
+function soloDrawResults(place, alpha, pop) {
+  const o = soloResultsOffset(place);
+  hx.save(); hx.globalAlpha = alpha;
+  hx.translate(HW / 2, HH / 2); hx.scale(pop, pop); hx.translate(-HW / 2 + o.dx, -HH / 2 + o.dy);
+  soloDrawResultsRaw(place);
+  hx.restore();
+}
+
+function soloDrawGameOver(t, alpha) {
+  // Las letras aparecen espejadas y en orden inverso ("REVO EMAG" al revés) y se dan vuelta,
+  // saltando y girando una por una hasta formar GAME OVER.
+  const word = 'GAME OVER', size = 92, sp = 14, spaceW = 46;
+  const ws = word.split('').map(ch => ch === ' ' ? spaceW : tw(ch, size) + sp);
+  const tot = ws.reduce((a, b) => a + b, 0) - sp;
+  const xf = []; let x = HW / 2 - tot / 2;
+  ws.forEach((w, i) => { xf.push(x + (w - (word[i] === ' ' ? 0 : sp)) / 2); x += w; });
+  const yBase = HH / 2 + 4;
+  let k = 0;
+  for (let i = 0; i < word.length; i++) {
+    if (word[i] === ' ') continue;
+    const dly = GO_ORDER[k] * 0.2 + 0.25, dur = 1.5;
+    const p = clamp((t - dly) / dur, 0, 1), s = 1.70158, q = p - 1;
+    const e = p >= 1 ? 1 : 1 + (s + 1) * q * q * q + s * q * q;           // easeOutBack
+    const xm = HW - xf[i];                                                 // posición espejada
+    const cx = xm + (xf[i] - xm) * e + Math.sin(p * TAU * 1.5) * (1 - p) * 24;
+    const cy = yBase - Math.sin(p * Math.PI) * (62 + 22 * (k % 3)) + Math.sin(t * 9 + k) * (1 - p) * 4;
+    const sx = -Math.cos(p * Math.PI * Math.min(1.04, e));                  // -1 (espejado) -> +1
+    const sc = 1 + Math.sin(p * Math.PI) * 0.45;
+    const rot = (k % 2 ? 1 : -1) * Math.sin(p * Math.PI * 2) * (1 - p) * 0.55;
+    const al = alpha * clamp(t / 0.35, 0, 1);
+    const glow = t > 3.2 ? 0.5 + 0.5 * Math.sin((t - 3.2) * 6 - k * 0.7) : 0;   // destello al quedar formado
+    const st = glow > 0.6 ? ['#ffffff', '#fff2a8', '#ffc23d'] : ['#fff0a0', '#ffd13d', '#ff971c'];
+    glyph(word[i], cx, cy, size, sx, sc, rot, st, '#5b2900', 9, al);
+    k++;
+  }
+}
 function drawEnding(te) {
-  // Film reference: RESULTS and the ranking are visible immediately; GAME OVER rotates in a few seconds later.
+  if (!S.mp) {
+    // Final de Arcade / FREE trasladado del index de referencia (sin cinematicas por puesto).
+    const teSolo = te;
+    const place = S.mode === 'timeout' ? S.resultPlace : P.place;
+    const fadeOut = teSolo > SOLO_END_TOTAL - 0.5 ? clamp((SOLO_END_TOTAL - teSolo) / 0.5, 0, 1) : 1;
+    if (teSolo >= SOLO_END_RES0 && teSolo < SOLO_END_RES1) {
+      const k = clamp((teSolo - SOLO_END_RES0) / 0.35, 0, 1);
+      soloDrawResults(place, k * (teSolo > SOLO_END_RES1 - 0.4 ? clamp((SOLO_END_RES1 - teSolo) / 0.4, 0, 1) : 1), 1 + (1 - k) * 0.5);
+    } else if (teSolo >= SOLO_END_GO0) soloDrawGameOver(teSolo - SOLO_END_GO0, fadeOut);
+    return;
+  }
+
+  // Solo online: RESULTS desde el primer fotograma, GAME OVER después de la maniobra.
   const place = S.mode === 'timeout' ? S.resultPlace : P.place;
   const fadeOut = te > END_TOTAL - 0.5 ? clamp((END_TOTAL - te) / 0.5, 0, 1) : 1;
   if (te >= END_RES0) {
