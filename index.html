@@ -875,100 +875,92 @@ function carContacts(dt) {
     }
   }
 }
+// Cinematográficas inspiradas en las tomas temporizadas del video de referencia.
+// RESULTS comienza al terminar la carrera, sea por meta o por reloj.
 function beginFinish(place, completed = true) {
-  if (S.mode === 'finish') { P.place = place; return; }
+  if (S.mode === 'finish') {
+    P.place = place; S.resultPlace = place;
+    if (S.cine) S.cine.place = place;
+    return;
+  }
   P.finished = true; P.place = place; S.resultPlace = place; S.endGoal = !!completed;
   S.mode = 'finish'; S.finT = 0.001; S.view = 2; applyView();
-  S.finLane = P.d;
-  S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
-  // Reiniciar el suavizado al comenzar la cinematográfica desde la cámara 3.
   if (R3) R3.camAng = 0;
-  // Daytona reference: fixed trackside camera, car approaches from afar, and
-  // RESULTS stays visible for the whole shot (not a frozen result screenshot).
-  // Capture an independent frame now: frameAt() reuses a global temporary.
-  const q = frameAt(P.dist + 143);
+  const startSpeed = clamp(Math.max(P.v, 43), 43, 75);
+  const targetDist = P.dist + startSpeed * 3.4;
+  const ff = frameAt(targetDist);
   const side = P.d < 0 ? -1 : 1;
-  S.cine = {
-    place, event: false, anchor: P.dist, lateral: P.d, side,
-    roll: 0, lift: 0, startSpeed: Math.max(42, P.v),
-    camera: [q.cx + q.rx * (P.d + side * 10), q.cy + q.uy * 2.3,
-             q.cz + q.rz * (P.d + side * 10)],
-    holdPos: null
-  };
-  msgs = []; beep(880, 0.15);
+  // Una cámara sobre el borde del asfalto espera a que el auto venga desde lejos.
+  const camPos = [ff.cx + ff.rx * (P.d + side * 10.4) + ff.ux * 2.2,
+                  ff.cy + ff.ry * (P.d + side * 10.4) + ff.uy * 2.2,
+                  ff.cz + ff.rz * (P.d + side * 10.4) + ff.uz * 2.2];
+  S.cine = {place, anchor: P.dist, targetDist, lateral: P.d, side,
+    startSpeed, camera: camPos, event: false, roll: 0, lift: 0,
+    hideCar: false, frozenTime: raceT, originLane: P.d};
+  S.te = null; msgs = []; P.braking = false;
   if (A.c) { const t = A.c.currentTime;
-    A.eg.gain.setTargetAtTime(0, t, .05);
-    A.ig.gain.setTargetAtTime(0, t, .05);
-    A.ng.gain.setTargetAtTime(0, t, .04);
+    A.eg.gain.setTargetAtTime(0, t, 0.045);
+    A.ig.gain.setTargetAtTime(0, t, 0.045);
+    A.ng.gain.setTargetAtTime(0, t, 0.045);
   }
 }
-// Finale storyboard measured from the supplied Daytona USA video:
-// 1st: 0-3 s car approaches a fixed roadside camera; 3-5 s fills the frame
-//       in profile; it poses there while the letters of GAME OVER fly in.
-// 2nd: same arrival, then a visible skid and drive-off.
-// 3rd: same arrival, then impact against the barrier and the car stays there.
-// 4th+: same arrival, then an extended roll/tumble away from the camera.
 function endingTick(dt) {
   const c = S.cine;
   S.finT += dt;
   const t = S.finT;
   if (!c) { if (t >= END_TOTAL) showMenu(); return; }
-  const ease = (a, b) => { const u = clamp((t - a) / (b - a), 0, 1); return u * u * (3 - 2 * u); };
-  const approach = 1 - ease(2.65, 4.45);
-  P.braking = false; P.thr = 0; P.acc = 0;
-  P.gear = 3; P.rpm = 0; // the engine must stay silent in RESULTS
-  P.steer = 0;
+  const smooth = (a, b) => { const v = clamp((t - a) / (b - a), 0, 1); return v * v * (3 - 2 * v); };
+  P.braking = false; P.thr = 0; P.acc = 0; P.rpm = 0; P.gear = 3;
+  P.steer = 0; P.inv = 1;
+  const stepForward = () => { P.dist += P.v * dt * Math.max(0.22, Math.cos(P.psi || 0)); };
+  // Primer plano: auto visto a lo lejos, aproximación y pausa lateral, como en 0-10s del video.
   if (c.place === 1) {
-    // Slow down gently to a full stop close to the camera, keeping the car level.
-    P.v = c.startSpeed * approach;
-    P.psi *= Math.max(0, 1 - dt * 3.0);
-    P.phi *= Math.max(0, 1 - dt * 3.0);
-    P.d += (c.lateral - P.d) * Math.min(1, dt * 2.3);
-    P.dist += P.v * dt;
+    const slowing = smooth(2.7, 4.35);
+    P.v = c.startSpeed * (1 - slowing);
+    P.phi += (0 - P.phi) * Math.min(1, dt * 4.0);
+    P.psi += (0 - P.psi) * Math.min(1, dt * 4.0);
+    P.d += (c.lateral - P.d) * Math.min(1, dt * 3);
+    stepForward();
+    // Una corrección imperceptible para que pose cerca de la cámara y no 30m más allá.
+    if (t >= 4.35 && t < 4.5) P.dist += (c.targetDist - P.dist) * Math.min(1, dt * 7);
   } else if (c.place === 2) {
-    const slide = ease(2.9, 4.45);
-    P.v = Math.max(12, c.startSpeed * (1 - 0.47 * slide));
-    P.psi = 0.72 * Math.sin(slide * Math.PI * 0.90);
-    P.phi = P.psi + 0.40 * Math.sin(slide * Math.PI);
-    P.d = clamp(c.lateral + c.side * 5.2 * slide, -WALL + 1.4, WALL - 1.4);
-    P.dist += P.v * dt * Math.cos(P.psi);
-    if (!c.event && t > 3.45) { c.event = true; thump(0.24); }
-    if (t > 5.0) {
-      // It continues into the distance, like the blue car in the film.
-      P.psi *= Math.max(0, 1 - dt * 2);
-      P.phi *= Math.max(0, 1 - dt * 2);
-    }
+    // Segundo: acercamiento, derrape transversal bajo la toma alta y salida.
+    const skid = smooth(2.65, 4.3), recover = smooth(5.05, 6.9);
+    P.v = c.startSpeed * (1 - 0.48 * skid) + 17 * recover;
+    P.psi = c.side * (0.89 * skid * (1 - recover));
+    P.phi = P.psi + c.side * 0.52 * Math.sin(Math.PI * skid) * (1 - recover);
+    P.d = clamp(c.lateral + c.side * 5.0 * skid, -WALL + 1.55, WALL - 1.55);
+    stepForward();
+    if (!c.event && t > 3.0) { c.event = true; thump(0.2); }
   } else if (c.place === 3) {
-    const hit = ease(2.8, 4.25);
-    P.v = c.startSpeed * (1 - ease(3.55, 5.2));
-    P.psi = c.side * 0.8 * hit;
-    P.phi = c.side * (0.95 * hit);
-    P.d = clamp(c.lateral + c.side * 22 * hit, -WALL + 1.15, WALL - 1.15);
-    P.dist += P.v * dt * Math.max(0.6, Math.cos(P.psi));
-    if (!c.event && t >= 4.08) {
-      c.event = true;
-      P.damage = Math.max(P.damage, .58); P.damageSide = c.side;
-      P.crash = 0.65; thump(0.8);
+    // Tercero: de lejos al choque en la pared; el auto queda varado en el borde.
+    const impact = smooth(2.75, 3.9);
+    P.v = c.startSpeed * (1 - smooth(3.3, 4.2));
+    P.psi = c.side * 0.75 * impact; P.phi = c.side * 1.02 * impact;
+    P.d = clamp(c.lateral + c.side * 22 * impact, -WALL + 1.15, WALL - 1.15);
+    stepForward();
+    if (!c.event && t >= 3.85) {
+      c.event = true; P.damage = Math.max(P.damage, .68); P.damageSide = c.side;
+      P.crash = .68; thump(.68);
     }
     P.crash = Math.max(0, P.crash - dt);
   } else {
-    const rollT = Math.max(0, t - 3.05);
-    P.v = c.startSpeed * (1 - .87 * ease(3.25, 7.8));
-    P.d = clamp(c.lateral + c.side * 21 * ease(3.0, 6.3), -WALL + 1.15, WALL - 1.15);
-    P.psi = c.side * 0.85 * ease(3.1, 4.7);
-    P.phi = c.side * 1.05 * ease(3.1, 4.8);
-    P.dist += P.v * dt * Math.max(.55, Math.cos(P.psi));
-    // Multiple real rotations in 3D, instead of v13's single tilted pose.
-    c.roll = rollT <= 0 ? 0 : Math.min(4.5 * Math.PI, rollT * 6.4);
-    c.lift = rollT <= 0 ? 0 : Math.max(0, Math.abs(Math.sin(c.roll * 0.52)) * 1.15);
-    if (!c.event && t >= 3.6) {
-      c.event = true;
-      P.damage = Math.max(P.damage, .79); P.damageSide = c.side;
-      P.crash = 0.78; thump(0.95);
+    // Cuarto en adelante: trompo, choque y múltiples vueltas de campana visibles.
+    const hit = smooth(2.1, 3.45), moving = smooth(4.0, 6.5);
+    P.v = c.startSpeed * (1 - 0.70 * hit) * (1 - 0.7 * moving);
+    P.psi = c.side * .95 * hit; P.phi = c.side * 1.2 * hit;
+    P.d = clamp(c.lateral + c.side * 21 * hit, -WALL + 1.20, WALL - 1.20);
+    stepForward();
+    const rollT = Math.max(0, t - 3.0);
+    c.roll = Math.min(Math.PI * 5.5, rollT * 8.2);
+    c.lift = rollT > 0 ? Math.abs(Math.sin(c.roll * .5)) * 1.30 : 0;
+    c.hideCar = t > 6.8;
+    if (!c.event && t >= 3.15) {
+      c.event = true; P.damage = Math.max(P.damage, .85); P.damageSide = c.side;
+      P.crash = .7; thump(.85);
     }
     P.crash = Math.max(0, P.crash - dt);
   }
-  P.inv = 1;
   if (t >= END_TOTAL) showMenu();
 }
 function sim(dt) {
@@ -1070,6 +1062,17 @@ function sim(dt) {
 function step(dt) {
   S.t += dt;
   if (S.mp && NET.state && NET.state.phase === 'results') mpApplyResult(NET.state);
+  if (S.mp && NET.r && NET.r.state()) {
+    const latest = NET.r.state();
+    if (latest !== NET.state) NET.state = latest;
+    if (latest.phase === 'results') mpApplyResult(latest);
+    // Si el estado del servidor llega tarde, no mostrar el coche congelado a 00:00.
+    // El resultado local es provisional y se corrige al recibir la clasificación oficial.
+    if (S.mode === 'race' && latest.phase === 'race' &&
+        mpNow() - latest.deadline > 1.3 && !S.cine) {
+      beginFinish(Math.max(1, rankNow()), false);
+    }
+  }
   if (S.mp && NET.state && S.mode === 'countdown') S.cd = Math.max(0, NET.state.raceAt - mpNow() + dt);
   if (S.mp && NET.state && (S.mode === 'countdown' || S.mode === 'race')) {
     P.time = S.mode === 'countdown' ? START_TIME : Math.max(0, NET.state.deadline - mpNow());
@@ -1523,10 +1526,16 @@ function buildCar(def, shared, renderer, isPlayer) {
   }
 
   const paints = [];
-  const dm = (fn, w, h) => new THREE.MeshLambertMaterial({
-    map: ctex(w, h, c => fn(c, w, h, def), false, renderer, (paints[paints.length] = { fn, w, h, def })),
-    side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3
-  });
+  const dm = (fn, w, h) => {
+    // Textura mutable por malla: la siguiente carrera puede usar una pintura distinta.
+    // No capturar la definición antigua: repaintMesh actualiza p.def.
+    const paint = { fn, w, h, def };
+    paints.push(paint);
+    return new THREE.MeshLambertMaterial({
+      map: ctex(w, h, ctx => paint.fn(ctx, w, h, paint.def), false, renderer, paint),
+      side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3
+    });
+  };
   if (isPlayer) {
     const mkSide = fl => new THREE.MeshLambertMaterial({ map: ctex(1024, 150, c => paintSideP(c, 1024, 150, fl), false, renderer, (paints[paints.length] = { fn: (c, w, h) => paintSideP(c, w, h, fl), w: 1024, h: 150, def })), side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
     g.add(new THREE.Mesh(shared.sideGeoL, mkSide(true)));
@@ -2020,33 +2029,58 @@ function updateCamera(st, dt, snap) {
     px = po.ps[0]; py = po.ps[1]; pz = po.ps[2]; lx = po.lk[0]; ly = po.lk[1]; lz = po.lk[2]; fov = po.fv;
     frameAt(st.dist);
   } else if (endCam) {
-    // Taken from video (not a 180-degree chase-camera orbit): a static TV camera
-    // at trackside watches the car approach; 1st place becomes a large side pose.
+    // Storyboard del video: toma fija de la pista, después encuadre de costado.
+    // El 2do corta a una cámara alta y el 3ro/4to mantienen visible el accidente.
     const c = S.cine, t = S.finT, place = c ? c.place : P.place;
     const side = c ? c.side : 1;
-    const camBase = c ? c.camera : [bx + f.rx * 11, by + 2.3, bz + f.rz * 11];
-    px = camBase[0]; py = camBase[1]; pz = camBase[2];
-    lx = bx + fux * 0.92; ly = by + fuy * 0.92; lz = bz + fuz * 0.92;
-    fov = place === 1 ? 49 : 55;
-    if (place === 1 && t >= 2.45) {
-      // Smoothly replace the establishing camera with a stable, close side shot.
-      const q = clamp((t - 2.45) / 1.85, 0, 1);
-      const e = q * q * (3 - 2 * q);
-      const sx = bx - fx * 0.65 + f.rx * side * 9.8 + fux * 1.95;
-      const sy = by - fy * 0.65 + f.ry * side * 9.8 + fuy * 1.95;
-      const sz = bz - fz * 0.65 + f.rz * side * 9.8 + fuz * 1.95;
+    const shot = c ? c.camera : [bx + f.rx * 10, by + 2.2, bz + f.rz * 10];
+    const ease = (a, b) => { const u = clamp((t - a) / (b - a), 0, 1); return u * u * (3 - 2 * u); };
+    // Plano general en la recta; el auto llega desde lejos, sin zoom artificial.
+    px = shot[0]; py = shot[1]; pz = shot[2];
+    lx = bx + fux * .90; ly = by + fuy * .90; lz = bz + fuz * .90;
+    fov = place === 1 ? 47 : 56;
+    if (place === 1) {
+      // Acercamiento discreto desde el costado; queda grande y de perfil.
+      const e = ease(2.8, 4.35);
+      const sx = bx - fx * .7 + f.rx * side * 8.5 + fux * 1.9;
+      const sy = by - fy * .7 + f.ry * side * 8.5 + fuy * 1.9;
+      const sz = bz - fz * .7 + f.rz * side * 8.5 + fuz * 1.9;
       px = lerp(px, sx, e); py = lerp(py, sy, e); pz = lerp(pz, sz, e);
-      lx = lerp(lx, bx + fux * 0.75, e);
-      ly = lerp(ly, by + fuy * 0.75, e);
-      lz = lerp(lz, bz + fuz * 0.75, e);
-      fov = lerp(55, 43, e);
-    } else if (place === 3 && t > 3.35) {
-      // Make the impact legible, without moving the whole camera through the wall.
-      const q = clamp((t - 3.35) / 1.5, 0, 1);
-      fov = lerp(55, 48, q);
-    } else if (place >= 4 && t > 3.0) {
-      // Keep the whole tumbling car within the wide TV shot.
-      fov = lerp(55, 62, clamp((t - 3.0) / 2.0, 0, 1));
+      fov = lerp(49, 42, e);
+    } else if (place === 2) {
+      const e = ease(4.0, 4.6);
+      // Corte tipo Daytona a plano alto posterior que revela el derrape;
+      // luego una toma de pista deja al auto alejarse en lugar de perseguirlo.
+      const sx = bx - fx * 8 + f.rx * (-side * 3.8) + fux * 7.7;
+      const sy = by - fy * 8 + f.ry * (-side * 3.8) + fuy * 7.7;
+      const sz = bz - fz * 8 + f.rz * (-side * 3.8) + fuz * 7.7;
+      px = lerp(px, sx, e); py = lerp(py, sy, e); pz = lerp(pz, sz, e);
+      if (t > 6.5) {
+        // La cámara se queda donde estaba mientras el auto sale de cuadro.
+        const p0 = frameAt(c.targetDist + 22);
+        const sx0 = p0.cx + p0.rx * (c.lateral + side * 13) + p0.ux * 5;
+        const sy0 = p0.cy + p0.ry * (c.lateral + side * 13) + p0.uy * 5;
+        const sz0 = p0.cz + p0.rz * (c.lateral + side * 13) + p0.uz * 5;
+        const e2 = ease(6.5, 7.3);
+        px = lerp(px, sx0, e2); py = lerp(py, sy0, e2); pz = lerp(pz, sz0, e2);
+      }
+      fov = lerp(56, 58, e);
+    } else if (place === 3) {
+      const e = ease(3.1, 4.2);
+      const sx = bx - fx * 9.5 + f.rx * (-side * 11.5) + fux * 3.4;
+      const sy = by - fy * 9.5 + f.ry * (-side * 11.5) + fuy * 3.4;
+      const sz = bz - fz * 9.5 + f.rz * (-side * 11.5) + fuz * 3.4;
+      px = lerp(px, sx, e); py = lerp(py, sy, e); pz = lerp(pz, sz, e);
+      fov = lerp(56, 52, e);
+    } else {
+      // La cámara no sigue el vuelco hasta el infinito: queda mirando la pista.
+      const e = ease(3.4, 5.1);
+      const p0 = frameAt(c.targetDist + 10);
+      const sx = p0.cx + p0.rx * (c.lateral + side * 11) + p0.ux * 3.6;
+      const sy = p0.cy + p0.ry * (c.lateral + side * 11) + p0.uy * 3.6;
+      const sz = p0.cz + p0.rz * (c.lateral + side * 11) + p0.uz * 3.6;
+      px = lerp(px, sx, e); py = lerp(py, sy, e); pz = lerp(pz, sz, e);
+      fov = lerp(55, 65, e);
     }
   } else if (v.hood) {
     px = bx + fx * v.fwd + f.ux * v.up; py = by + fy * v.fwd + f.uy * v.up; pz = bz + fz * v.fwd + f.uz * v.up;
@@ -2490,13 +2524,20 @@ async function mpLeave(lost) {
 // La sala decide la clasificación y el instante de finalización.
 // La cinematográfica es visual y local; la posición viene del servidor.
 function mpApplyResult(state) {
-  if (!state || !state.results || !(S.mode === 'race' || S.mode === 'countdown' || S.mode === 'finish')) return;
+  if (!state || !state.results || !S.mp) return;
   const place = state.results[mpMyPeer()];
   if (!place) return;
+  // Una pestaña suspendida puede recibir RESULTS antes de terminar su pantalla GENTLEMEN.
+  // En ese caso no perder la escena: entrar directamente a la carrera y reproducirla.
+  if (S.mode === 'menu' && S.gs && S.gs.multiplayer && Array.isArray(state.ord)) {
+    startRaceMP(state.ord);
+    P.dist = Math.max(P.dist, (LAPS - 1) * L + 30);
+  }
+  if (!(S.mode === 'race' || S.mode === 'countdown' || S.mode === 'finish')) return;
   if (S.mode !== 'finish') beginFinish(place, P.lapsDone >= LAPS);
   P.place = place; S.resultPlace = place;
-  if (S.cine) S.cine.place = place;
-  if (state.finishAt) raceT = Math.max(0, state.finishAt - state.raceAt);
+  if (S.cine) { S.cine.place = place; S.cine.frozenTime = Math.max(0, (state.resultsAt || state.finishAt || state.deadline) - state.raceAt); }
+  if (state.resultsAt || state.finishAt) raceT = Math.max(0, (state.resultsAt || state.finishAt) - state.raceAt);
 }
 function mpOnPeers() {
   if (!NET.r) return;
@@ -3468,8 +3509,13 @@ function render(dt) {
     if (v && S.mode !== 'timeout') placeCar(remote || m, c, dt, false);
   });
   const showP = true;
-  playerMesh.group.visible = true;
+  playerMesh.group.visible = !(S.mode === 'finish' && S.cine && S.cine.hideCar);
   if (S.mode !== 'timeout') placeCar(playerMesh, P, dt, P.tumble > 0 && P.kind === 'flip');
+  // El vuelco cinematográfico necesita rotar el modelo REAL, no solo una variable de física.
+  if (S.mode === 'finish' && S.cine && S.cine.place >= 4) {
+    playerMesh.group.rotateZ(S.cine.roll || 0);
+    playerMesh.group.position.y += S.cine.lift || 0;
+  }
   if (S.mode !== 'timeout') animateCarGlass(playerMesh, P, dt);
   updateDamageMesh();
   if (S.mode !== 'menu' && S.mode !== 'timeout' && P.tumble <= 0) {
@@ -3554,7 +3600,11 @@ function showMenu(keepSel) {
   if (document.body) document.body.dataset.menu = '1';
   resetPlayer(); makeCars(); finCount = 0; raceT = 0;
   // Restaurar los NPC originales cuando se vuelve de multiplayer al modo individual.
-  if (carMeshes.length) carMeshes.forEach((m, i) => { if (cars[i]) repaintMesh(m, cars[i]); });
+  if (carMeshes.length) carMeshes.forEach((m, i) => {
+    if (cars[i]) repaintMesh(m, cars[i]);
+    // Cada NPC recupera sus propias texturas; nunca arrastra el 00 de Multiplayer.
+    if (m.group) { m.group.rotation.set(0, 0, 0); m.group.scale.set(1, 1, 1); }
+  });
   P.v = 48; P.gear = 2; P.dist = 0; P.d = 3; P.phi = 0; P.psi = 0;
   {
     // La demo arranca desde un punto tal que el #41 llega a la salida de una curva justo cuando empieza la toma final (1:25).

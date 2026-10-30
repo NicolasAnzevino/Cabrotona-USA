@@ -14,3 +14,28 @@ Subir los archivos de este ZIP a la raíz del repositorio GitHub y hacer commit 
 
 ## Pruebas
 Comprobada sintaxis del JavaScript con `node --check`, compilación del servidor Python y conexión real de 2 sockets con 4 vueltas, ganador y clasificación compartida. La revisión visual 3D real quedó pendiente: el navegador automatizado del entorno impidió abrir la URL local.
+
+
+### v13 — Multiplayer
+- TRANSMISSION: cada jugador puede alternar AT/MT desde su fila, boton inferior o tecla T.
+- Eliminado solamente el titulo SESSION DATA (se conservan COURSE, NON PLAYER CARS, GAME TYPE).
+- BEGINNER 4 LAPS tanto Arcade como Multiplayer.
+- Una cinematografica de RESULTS para todos, ganen o se agote el reloj global; el servidor fija el puesto.
+- El ganador queda con un plano lateral grande del auto similar a Daytona USA.
+
+## v14 · Endings adaptados del video de referencia
+
+- Desde que termina la carrera aparece RESULTS, y el reloj de la carrera queda fijado.
+- Cámara tipo TV a un costado de pista: el auto se acerca desde lejos en movimiento.
+- 1.º: acercamiento y plano lateral grande, el auto posa sin movimientos extraños.
+- 2.º: derrape y alejamiento; 3.º: golpe y queda detenido; 4.º+: múltiples vueltas de campana.
+- GAME OVER entra con la animación de letras mientras la escena 3D sigue funcionando.
+- 4 vueltas en BEGINNER multijugador, AT/MT y cierre compartido a los 2 s sin cambios.
+
+Este código recrea el montaje en el motor 3D y no reproduce ni incorpora el video como asset.
+
+### Versión v15: endings y NPC
+- Cinematográficas revisadas contra el video de referencia: planos generales, perfil cercano, derrape, choque y vuelco real del modelo 3D. RESULTS aparece desde el principio.
+- Final online por reloj: acepta la clasificación del servidor y activa un cierre local provisional si el paquete de resultados tarda más de 1,3 segundos. La clasificación del servidor tiene prioridad al llegar.
+- Corregido el repintado de texturas de NPC al volver a Arcade/intro tras Multiplayer; no se reutilizan las texturas violetas/00.
+- Se conservan las 4 vueltas en BEGINNER, el selector AT/MT, el sistema LISTO y los CPU violetas.

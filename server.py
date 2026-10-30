@@ -51,7 +51,7 @@ def room_state(room_name):
             "countdownAt": s["countdownAt"], "raceAt": s["raceAt"],
             "deadline": s["deadline"], "bonus": s["bonus"],
             "winner": s["winner"], "finishAt": s["finishAt"],
-            "results": s["results"],
+            "resultsAt": s["resultsAt"], "results": s["results"],
             "serverNow": time.time()}
 
 
@@ -243,7 +243,7 @@ async def websocket_handler(request):
 
 
 def calculate_results(s):
-    """Winner is first to cross the line; remaining standings are frozen at T+2s."""
+    """Freeze completed order + distance order at winner+2s or time limit."""
     ordered = [pid for pid in s["finish_order"] if pid in s["ord"]]
     remaining = [pid for pid in s["ord"] if pid not in ordered]
     remaining.sort(key=lambda pid: (-s["last_progress"].get(pid, 0), s["ord"].index(pid)))
@@ -263,18 +263,17 @@ async def ticker(app):
                 s["resultsAt"] = time.time()
                 await publish_state(name)
             elif s["phase"] == "race" and not s["winner"] and time.time() >= s["deadline"]:
-                s["phase"] = "timeout"
-                s["timeoutAt"] = time.time()
+                # Fin por reloj agotado: misma ceremonia y clasificación que
+                # si alguien ganara (antes se saltaba toda la cinematográfica).
+                s["phase"] = "results"
+                s["finishAt"] = s["deadline"]
+                s["results"] = calculate_results(s)
+                s["resultsAt"] = time.time()
                 await publish_state(name)
             elif s["phase"] == "results" and time.time() >= s.get("resultsAt", 0) + 17:
                 s.update(phase="lobby", ord=[], introAt=0, countdownAt=0,
                          raceAt=0, deadline=0, lap={}, ready={}, bonus=0, winner=None,
                          finishAt=0.0, results={}, finish_order=[], last_progress={}, resultsAt=0.0)
-                await publish_state(name)
-            elif s["phase"] == "timeout" and time.time() >= s.get("timeoutAt", 0) + 17:
-                s.update(phase="lobby", ord=[], introAt=0, countdownAt=0,
-                         raceAt=0, deadline=0, lap={}, ready={}, bonus=0, winner=None,
-                 finishAt=0.0, results={}, finish_order=[], last_progress={}, resultsAt=0.0)
                 await publish_state(name)
 
 
