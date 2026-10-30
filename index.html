@@ -875,13 +875,26 @@ function carContacts(dt) {
     }
   }
 }
-function beginFinish(place) {
+function beginFinish(place, completed = true) {
   if (S.mode === 'finish') { P.place = place; return; }
-  P.finished = true; P.place = place; S.resultPlace = place;
+  P.finished = true; P.place = place; S.resultPlace = place; S.endGoal = !!completed;
   S.mode = 'finish'; S.finT = 0.001; S.view = 2; applyView();
   S.finLane = P.d;
   S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
-  S.cine = { place, event: false, anchor: P.dist, lateral: P.d, roll: 0 };
+  // Reiniciar el suavizado al comenzar la cinematográfica desde la cámara 3.
+  if (R3) R3.camAng = 0;
+  // Daytona reference: fixed trackside camera, car approaches from afar, and
+  // RESULTS stays visible for the whole shot (not a frozen result screenshot).
+  // Capture an independent frame now: frameAt() reuses a global temporary.
+  const q = frameAt(P.dist + 143);
+  const side = P.d < 0 ? -1 : 1;
+  S.cine = {
+    place, event: false, anchor: P.dist, lateral: P.d, side,
+    roll: 0, lift: 0, startSpeed: Math.max(42, P.v),
+    camera: [q.cx + q.rx * (P.d + side * 10), q.cy + q.uy * 2.3,
+             q.cz + q.rz * (P.d + side * 10)],
+    holdPos: null
+  };
   msgs = []; beep(880, 0.15);
   if (A.c) { const t = A.c.currentTime;
     A.eg.gain.setTargetAtTime(0, t, .05);
@@ -889,24 +902,79 @@ function beginFinish(place) {
     A.ng.gain.setTargetAtTime(0, t, .04);
   }
 }
+// Finale storyboard measured from the supplied Daytona USA video:
+// 1st: 0-3 s car approaches a fixed roadside camera; 3-5 s fills the frame
+//       in profile; it poses there while the letters of GAME OVER fly in.
+// 2nd: same arrival, then a visible skid and drive-off.
+// 3rd: same arrival, then impact against the barrier and the car stays there.
+// 4th+: same arrival, then an extended roll/tumble away from the camera.
+function endingTick(dt) {
+  const c = S.cine;
+  S.finT += dt;
+  const t = S.finT;
+  if (!c) { if (t >= END_TOTAL) showMenu(); return; }
+  const ease = (a, b) => { const u = clamp((t - a) / (b - a), 0, 1); return u * u * (3 - 2 * u); };
+  const approach = 1 - ease(2.65, 4.45);
+  P.braking = false; P.thr = 0; P.acc = 0;
+  P.gear = 3; P.rpm = 0; // the engine must stay silent in RESULTS
+  P.steer = 0;
+  if (c.place === 1) {
+    // Slow down gently to a full stop close to the camera, keeping the car level.
+    P.v = c.startSpeed * approach;
+    P.psi *= Math.max(0, 1 - dt * 3.0);
+    P.phi *= Math.max(0, 1 - dt * 3.0);
+    P.d += (c.lateral - P.d) * Math.min(1, dt * 2.3);
+    P.dist += P.v * dt;
+  } else if (c.place === 2) {
+    const slide = ease(2.9, 4.45);
+    P.v = Math.max(12, c.startSpeed * (1 - 0.47 * slide));
+    P.psi = 0.72 * Math.sin(slide * Math.PI * 0.90);
+    P.phi = P.psi + 0.40 * Math.sin(slide * Math.PI);
+    P.d = clamp(c.lateral + c.side * 5.2 * slide, -WALL + 1.4, WALL - 1.4);
+    P.dist += P.v * dt * Math.cos(P.psi);
+    if (!c.event && t > 3.45) { c.event = true; thump(0.24); }
+    if (t > 5.0) {
+      // It continues into the distance, like the blue car in the film.
+      P.psi *= Math.max(0, 1 - dt * 2);
+      P.phi *= Math.max(0, 1 - dt * 2);
+    }
+  } else if (c.place === 3) {
+    const hit = ease(2.8, 4.25);
+    P.v = c.startSpeed * (1 - ease(3.55, 5.2));
+    P.psi = c.side * 0.8 * hit;
+    P.phi = c.side * (0.95 * hit);
+    P.d = clamp(c.lateral + c.side * 22 * hit, -WALL + 1.15, WALL - 1.15);
+    P.dist += P.v * dt * Math.max(0.6, Math.cos(P.psi));
+    if (!c.event && t >= 4.08) {
+      c.event = true;
+      P.damage = Math.max(P.damage, .58); P.damageSide = c.side;
+      P.crash = 0.65; thump(0.8);
+    }
+    P.crash = Math.max(0, P.crash - dt);
+  } else {
+    const rollT = Math.max(0, t - 3.05);
+    P.v = c.startSpeed * (1 - .87 * ease(3.25, 7.8));
+    P.d = clamp(c.lateral + c.side * 21 * ease(3.0, 6.3), -WALL + 1.15, WALL - 1.15);
+    P.psi = c.side * 0.85 * ease(3.1, 4.7);
+    P.phi = c.side * 1.05 * ease(3.1, 4.8);
+    P.dist += P.v * dt * Math.max(.55, Math.cos(P.psi));
+    // Multiple real rotations in 3D, instead of v13's single tilted pose.
+    c.roll = rollT <= 0 ? 0 : Math.min(4.5 * Math.PI, rollT * 6.4);
+    c.lift = rollT <= 0 ? 0 : Math.max(0, Math.abs(Math.sin(c.roll * 0.52)) * 1.15);
+    if (!c.event && t >= 3.6) {
+      c.event = true;
+      P.damage = Math.max(P.damage, .79); P.damageSide = c.side;
+      P.crash = 0.78; thump(0.95);
+    }
+    P.crash = Math.max(0, P.crash - dt);
+  }
+  P.inv = 1;
+  if (t >= END_TOTAL) showMenu();
+}
 function sim(dt) {
   const racing = S.mode === 'race';
-  if (S.mode === 'finish' && S.finT >= END_RES0) {
-    // RESULTS: congelar el mundo y el cronómetro, sin congelar el HUD.
-    S.finT += dt;
-    if (P.v !== 0) {
-      P.v = 0; P.acc = 0; P.thr = 0; P.braking = false;
-      for (const c of cars) { c.v = 0; c.run = false; c.lv = 0; }
-    }
-    if (S.finT >= END_TOTAL) showMenu();
-    return;
-  }
-  if (S.mode === 'timeout') {
-    // El tiempo se congela: ni física, ni rivales, ni cronómetro vuelven a avanzar.
-    S.finT += dt;
-    if (S.finT + TO_OFF >= END_TOTAL) showMenu();
-    return;
-  }
+  if (S.mode === 'finish') { endingTick(dt); return; }
+  // Los finales por tiempo agotado también entran a 'finish' y muestran su cinematográfica.
   // Tras cruzar la meta, la simulación sigue también debajo de RESULTS y GAME OVER.
   // El auto se conduce solo hasta que termine la secuencia; nunca se congela en pantalla.
   if (S.mode === 'menu') {
@@ -919,7 +987,7 @@ function sim(dt) {
     return;
   }
   let inp;
-  if (racing) inp = readInput();
+  if (racing) inp = (S.mp && P.finished) ? autoDrive(Math.max(46, P.v * 0.98), P.d) : readInput();
   else {
     S.finT += dt;
     if (S.mode === 'finish') {
@@ -972,33 +1040,31 @@ function sim(dt) {
   if (racing) {
     raceT = S.mp && NET.state ? Math.max(0, mpNow() - NET.state.raceAt) : raceT + dt; P.time = S.mp && NET.state ? Math.max(0, NET.state.deadline - mpNow()) : P.time - dt;
     const lapNow = Math.floor(P.dist / L);
-    if (lapNow > P.lapsDone) {
+    if (!P.finished && lapNow > P.lapsDone) {
       P.lapsDone = lapNow;
       const lt = raceT - P.lapStart;
       P.lapStart = raceT;
       P.lapTimes.push(lt); // Una entrada real por vuelta completada; se reinicia con cada carrera.
       const isBest = lt < P.bestLap; if (isBest) P.bestLap = lt;
       if (lapNow >= LAPS) {
-        beginFinish(S.mp ? mpFinPlace() : ++finCount);
+        if (S.mp) {
+          // El servidor espera 2 segundos desde la victoria y recién entonces
+          // activa la cinematográfica de todos con la posición definitiva.
+          P.finished = true;
+        } else beginFinish(++finCount, true);
       } else {
         if (!S.freeRun && !S.mp) { P.time += BONUS; S.te = { t: 0, best: isBest, lt }; } beep(1040, 0.12); setTimeout(() => beep(1560, 0.2), 120); setTimeout(() => beep(2080, 0.25), 260);
       }
     }
     if (P.time <= 0 && !P.finished && S.mode === 'race') {
       P.time = 0;
-      S.resultPlace = rankNow(); // la posición ya no cambia mientras se ven los resultados
-      S.mode = 'timeout'; S.finT = 0.001; msgs = [];
-      P.v = 0; P.acc = 0; P.thr = 0; P.braking = false;
-      cars.forEach(c => { c.v = 0; c.run = false; c.ddt = 0; c.lv = 0; });
-      if (A.c) {
-        A.eg.gain.setTargetAtTime(0, A.c.currentTime, .025);
-        A.ig.gain.setTargetAtTime(0, A.c.currentTime, .025);
-        A.ng.gain.setTargetAtTime(0, A.c.currentTime, .025);
+      // En una sala online solamente el servidor declara el cierre y ordena
+      // los puestos. En Arcade la cinematográfica empieza de inmediato.
+      if (!S.mp) {
+        beginFinish(rankNow(), false);
+        beep(220, 0.30, 'sawtooth', .06);
       }
-      beep(220, 0.30, 'sawtooth', .06);
     }
-  } else if (S.mode === 'finish' && S.finT >= END_TOTAL) {
-    showMenu();   // después del GAME OVER vuelve la demo
   }
 }
 function step(dt) {
@@ -1007,7 +1073,7 @@ function step(dt) {
   if (S.mp && NET.state && S.mode === 'countdown') S.cd = Math.max(0, NET.state.raceAt - mpNow() + dt);
   if (S.mp && NET.state && (S.mode === 'countdown' || S.mode === 'race')) {
     P.time = S.mode === 'countdown' ? START_TIME : Math.max(0, NET.state.deadline - mpNow());
-    if (NET.state.phase === 'timeout' && S.mode === 'race') { S.resultPlace = rankNow(); S.mode = 'timeout'; S.finT = .001; }
+    // El servidor envía 'results' incluso cuando se agota el reloj.
   }
   mpSend();
   if (S.mode === 'menu') {
@@ -1832,8 +1898,11 @@ function placeCar(m, st, dt, tumbling) {
   const pitchT = clamp(-(st.acc || 0) * 0.0022, -0.03, 0.03);
   st.pS = st.pS === undefined ? pitchT : st.pS + (pitchT - st.pS) * Math.min(1, (dt || 0.016) * 5);
   const pitch = st.pS;
-  const wreckPose = st === P && S.mode === 'finish' && S.cine && S.cine.place >= 4 && S.finT >= 7.0;
-  if (tumbling || wreckPose) { const flip = wreckPose ? Math.PI * 0.59 : st.flip; roll += flip; py += Math.abs(Math.sin(flip * 0.5)) * 1.05; }
+  const filmRoll = st === P && S.mode === 'finish' && S.cine && S.cine.place >= 4;
+  if (tumbling || filmRoll) {
+    const flip = filmRoll ? S.cine.roll : st.flip;
+    roll += flip; py += filmRoll ? S.cine.lift : Math.abs(Math.sin(flip * 0.5)) * 2.6;
+  }
   const cr = Math.cos(roll), sr = Math.sin(roll);
   let x1x = xx * cr + yx * sr, x1y = xy * cr + yy * sr, x1z = xz * cr + yz * sr;
   let y1x = -xx * sr + yx * cr, y1y = -xy * sr + yy * cr, y1z = -xz * sr + yz * cr;
@@ -1951,19 +2020,34 @@ function updateCamera(st, dt, snap) {
     px = po.ps[0]; py = po.ps[1]; pz = po.ps[2]; lx = po.lk[0]; ly = po.lk[1]; lz = po.lk[2]; fov = po.fv;
     frameAt(st.dist);
   } else if (endCam) {
-    // Cinemática Daytona: comienza en cámara 3 y gira por la derecha hasta
-    // una toma lateral de perfil, con la carrocería visible detrás de RESULTS.
-    const tt = clamp(S.finT / 4.1, 0, 1), e = tt * tt * (3 - 2 * tt);
-    const ang = e * 1.40, dist = 5.9 + 5.2 * e;
-    const ct = Math.cos(ang), sn = Math.sin(ang), h = 2.0 + 0.30 * e;
-    px = bx - fx * dist * ct + f.rx * dist * sn + f.ux * h;
-    py = by - fy * dist * ct + f.ry * dist * sn + f.uy * h;
-    pz = bz - fz * dist * ct + f.rz * dist * sn + f.uz * h;
-    const ahead = 15 * Math.pow(1 - e, 2.5);
-    lx = bx + fx * ahead + f.ux * (1 - e * 0.05);
-    ly = by + fy * ahead + f.uy * (1 - e * 0.05);
-    lz = bz + fz * ahead + f.uz * (1 - e * 0.05);
-    fov = 62 + (1-e) * 10;
+    // Taken from video (not a 180-degree chase-camera orbit): a static TV camera
+    // at trackside watches the car approach; 1st place becomes a large side pose.
+    const c = S.cine, t = S.finT, place = c ? c.place : P.place;
+    const side = c ? c.side : 1;
+    const camBase = c ? c.camera : [bx + f.rx * 11, by + 2.3, bz + f.rz * 11];
+    px = camBase[0]; py = camBase[1]; pz = camBase[2];
+    lx = bx + fux * 0.92; ly = by + fuy * 0.92; lz = bz + fuz * 0.92;
+    fov = place === 1 ? 49 : 55;
+    if (place === 1 && t >= 2.45) {
+      // Smoothly replace the establishing camera with a stable, close side shot.
+      const q = clamp((t - 2.45) / 1.85, 0, 1);
+      const e = q * q * (3 - 2 * q);
+      const sx = bx - fx * 0.65 + f.rx * side * 9.8 + fux * 1.95;
+      const sy = by - fy * 0.65 + f.ry * side * 9.8 + fuy * 1.95;
+      const sz = bz - fz * 0.65 + f.rz * side * 9.8 + fuz * 1.95;
+      px = lerp(px, sx, e); py = lerp(py, sy, e); pz = lerp(pz, sz, e);
+      lx = lerp(lx, bx + fux * 0.75, e);
+      ly = lerp(ly, by + fuy * 0.75, e);
+      lz = lerp(lz, bz + fuz * 0.75, e);
+      fov = lerp(55, 43, e);
+    } else if (place === 3 && t > 3.35) {
+      // Make the impact legible, without moving the whole camera through the wall.
+      const q = clamp((t - 3.35) / 1.5, 0, 1);
+      fov = lerp(55, 48, q);
+    } else if (place >= 4 && t > 3.0) {
+      // Keep the whole tumbling car within the wide TV shot.
+      fov = lerp(55, 62, clamp((t - 3.0) / 2.0, 0, 1));
+    }
   } else if (v.hood) {
     px = bx + fx * v.fwd + f.ux * v.up; py = by + fy * v.fwd + f.uy * v.up; pz = bz + fz * v.fwd + f.uz * v.up;
     lx = bx + fx * v.look + f.ux * v.lookUp; ly = by + fy * v.look + f.uy * v.lookUp; lz = bz + fz * v.look + f.uz * v.lookUp;
@@ -2409,10 +2493,10 @@ function mpApplyResult(state) {
   if (!state || !state.results || !(S.mode === 'race' || S.mode === 'countdown' || S.mode === 'finish')) return;
   const place = state.results[mpMyPeer()];
   if (!place) return;
-  if (S.mode !== 'finish') beginFinish(place);
+  if (S.mode !== 'finish') beginFinish(place, P.lapsDone >= LAPS);
   P.place = place; S.resultPlace = place;
   if (S.cine) S.cine.place = place;
-  if (state.finishAt) raceT = Math.max(0, state.finishAt - (place === 1 ? 2 : 0) - state.raceAt);
+  if (state.finishAt) raceT = Math.max(0, state.finishAt - state.raceAt);
 }
 function mpOnPeers() {
   if (!NET.r) return;
@@ -2433,9 +2517,8 @@ function mpOnPeers() {
     S.sel = true; musicStop(); selMusicStop(); gsPrepare();
   }
   if (state.phase === 'results' && S.mp) mpApplyResult(state);
-  if (state.phase === 'timeout' && S.mp && (S.mode === 'race' || S.mode === 'countdown')) {
-    S.mode = 'timeout'; S.finT = 0.001; P.time = 0; S.resultPlace = rankNow();
-  }
+  // No existe un estado online sin cinematográfica: los finales por reloj
+  // llegan como 'results', igual que los finales por victoria.
   if (state.phase === 'lobby' && S.mp && !S.lb && !S.gs && S.mode !== 'menu') showMenu(true);
 }
 function mpToggleReady() {
@@ -2604,16 +2687,18 @@ function drawLobby() {
     hx.fillText(String(pr.n).slice(0, 12), 150, y + 15, 205);
     hx.fillStyle = '#fff'; hx.font = '700 15px ' + F2; hx.textAlign = 'right';
     hx.fillText(pr.h ? 'HOST' : ((NET.state && NET.state.ready[p.peer]) ? 'LISTO' : 'NO LISTO'), 390, y + 15);
+    // Cada piloto elige su propia caja: AT (automática) o MT (manual).
     const mt = pr.t === 'manual';
-    // No se muestran opciones de transmisión en el lobby.
+    if (mine) { hx.fillStyle = '#8a2bd4'; hx.beginPath(); hx.arc(414, y + 14, 9, 0, TAU); hx.fill(); hx.fillStyle = '#e8d2ff'; hx.font = '700 11px Arial'; hx.textAlign = 'center'; hx.fillText('T', 414, y + 14); }
+    hx.fillStyle = '#1a1a1e'; rr(432, y + 3, 74, 22, 3); hx.fill(); hx.strokeStyle = '#ff8a1a'; hx.lineWidth = 2; rr(432, y + 3, 74, 22, 3); hx.stroke();
+    hx.font = '400 17px ' + F1; hx.textAlign = 'center'; hx.fillStyle = '#ff8a1a'; hx.fillText(mt ? 'MT' : 'AT', 469, y + 15);
+    if (mine) L0.hit.push({ k: 'trans', x: 401, y, w: 115, h: 28 });
   }
-  // datos de la sesión
+  // Opciones del lobby: sin encabezado SESSION DATA.
   hx.fillStyle = '#7d8099'; rr(528, 66, 204, 266, 4); hx.fill();
-  hx.fillStyle = '#000'; hx.fillRect(532, 70, 196, 22); hx.fillStyle = '#d4141c'; hx.fillRect(532, 91, 196, 2);
-  hx.font = 'italic 900 15px Georgia, serif'; hx.textAlign = 'left'; hx.textBaseline = 'middle'; hx.fillStyle = '#ff2a2a'; hx.fillText('SESSION DATA', 536, 82);
   const ci = (hpr.c | 0), fields = [['COURSE', (CS_COURSES[ci] || CS_COURSES[0]).name.toUpperCase() + ' (4 LAPS)'], ['NON PLAYER CARS', NET.cpu ? 'YES' : 'NO'], ['GAME TYPE', 'TYPE A']];
   fields.forEach((f, i) => {
-    const y = 115 + i * 67;
+    const y = 100 + i * 73;
     hx.font = '600 13px "Barlow Condensed", Arial, sans-serif'; hx.textAlign = 'left'; hx.fillStyle = '#fff'; hx.fillText(f[0], 538, y);
     hx.fillStyle = '#000'; hx.fillRect(534, y + 8, 196, 20);
     hx.font = '700 14px "Barlow Condensed", Arial, sans-serif'; hx.fillStyle = '#fff'; hx.fillText(f[1], 538, y + 18);
@@ -2633,8 +2718,8 @@ function drawLobby() {
     hx.font = '700 15px "Barlow Condensed", Arial, sans-serif'; hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.fillStyle = on ? '#fff' : '#777c8a'; hx.fillText(label, x + w / 2, 419);
     if (on) L0.hit.push({ k, x, y: 404, w, h: 30 });
   };
-  // Sin botón de transmisión: el lobby solo ofrece COURSE, CPU y GAME TYPE.
-  btn(NET.host ? 'start' : 'ready', NET.host ? 'START [ENTER]' : (NET.state && NET.state.ready[mpMyPeer()] ? 'CANCELAR LISTO' : 'LISTO [ENTER]'), 110, 310, NET.host ? mpReadyToStart() : !!(NET.state && NET.state.phase === 'lobby'));
+  btn('trans', 'TRANSMISSION [T]', 76, 190, true);
+  btn(NET.host ? 'start' : 'ready', NET.host ? 'START [ENTER]' : (NET.state && NET.state.ready[mpMyPeer()] ? 'CANCELAR LISTO' : 'LISTO [ENTER]'), 290, 190, NET.host ? mpReadyToStart() : !!(NET.state && NET.state.phase === 'lobby'));
   btn('exit', 'EXIT [ESC]', 504, 150, true);
   hx.fillStyle = '#9fb8e6'; hx.font = '600 13px "Barlow Condensed", Arial, sans-serif'; hx.textAlign = 'right'; hx.fillText(pl.length + '/' + MP_MAX, 724, 419);
 }
@@ -2642,7 +2727,7 @@ function lbPointer(e) {
   const L0 = S.lb; if (!L0) return;
   const r = $('frame').getBoundingClientRect(), x = (e.clientX - r.left) / r.width * HW, y = (e.clientY - r.top) / r.height * HH;
   for (const h of L0.hit) if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
-    if (h.k === 'course') mpCourse(1); else if (h.k === 'cpu') mpToggleCPU(); else if (h.k === 'ready') mpToggleReady(); else if (h.k === 'start') mpStart(); else if (h.k === 'exit') mpLeave();
+    if (h.k === 'trans') mpToggleTrans(); else if (h.k === 'course') mpCourse(1); else if (h.k === 'cpu') mpToggleCPU(); else if (h.k === 'ready') mpToggleReady(); else if (h.k === 'start') mpStart(); else if (h.k === 'exit') mpLeave();
     return;
   }
 }
@@ -3166,7 +3251,7 @@ function drawHUD() {
     return;
   }
   const te = endClock();
-  if (te !== null && te >= TO_OFF) { drawEnding(te); return; }   // RESULTS / GAME OVER: se oculta todo el HUD
+  if (te !== null && te >= END_RES0) { drawEnding(te); return; }   // RESULTS aparece desde el primer fotograma del ending
   const rank = S.mode === 'timeout' ? S.resultPlace : rankNow();
   const racing = S.mode === 'race' || S.mode === 'countdown';
   const sp = clamp((P.v - 55) / 35, 0, 1);
@@ -3219,7 +3304,7 @@ function drawHUD() {
   if (S.te && S.mode === 'race') drawTimeExt(S.te);
   if (S.mode === 'countdown') { const n = Math.ceil(S.cd); if (n > 0 && n <= 3) itext(String(n), HW / 2, 298, 124, '#ffe14a', 'center', '#10224a', 10); }
   else if (S.go > 0) itext('GO!', HW / 2, 330, 120, '#7dff9a', 'center', '#0a2a12', 10);
-  if (S.mode === 'finish' && S.finT < GOAL_END) drawGoal(S.finT);
+  if (S.mode === 'finish' && S.endGoal && S.finT < GOAL_END) drawGoal(S.finT);
 }
 function ordinal(n) { return n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th'); }
 function gradText(str, x, y, size, stops, stroke, sw, spacing, italic) {
@@ -3241,8 +3326,8 @@ function gradText(str, x, y, size, stops, stroke, sw, spacing, italic) {
    Final de carrera (llegada o tiempo agotado):
    GOAL (solo si llegaste) -> RESULTS + posición (HUD oculto) -> GAME OVER animado -> vuelve la demo.
    --------------------------------------------------------------------- */
-const END_RES0 = 8.0, END_GO0 = 9.0, END_TOTAL = 16.8, GOAL_END = 7.6;   // GOAL: la cámara da la vuelta y el auto sigue solo unos segundos; recién después RESULTS
-const TO_OFF = END_RES0 - 0.3;   // el tiempo agotado salta directo a RESULTS
+const END_RES0 = 0, END_GO0 = 4.0, END_TOTAL = 12.0, GOAL_END = 0;   // VIDEO: RESULTS desde el inicio, GAME OVER tras la maniobra
+const TO_OFF = 0;
 function endClock() { return S.mode === 'timeout' ? S.finT + TO_OFF : (S.mode === 'finish' ? S.finT : null); }
 function tw(str, size) { hx.save(); hx.font = '400 ' + size + 'px ' + F1; const w = hx.measureText(str).width; hx.restore(); return w; }
 function drawGoal(t) {
@@ -3317,7 +3402,7 @@ function drawGameOver(t, alpha) {
   }
 }
 function drawEnding(te) {
-  // Desde RESULTS hasta el final el panel queda siempre a la vista; GAME OVER se anima encima.
+  // Film reference: RESULTS and the ranking are visible immediately; GAME OVER rotates in a few seconds later.
   const place = S.mode === 'timeout' ? S.resultPlace : P.place;
   const fadeOut = te > END_TOTAL - 0.5 ? clamp((END_TOTAL - te) / 0.5, 0, 1) : 1;
   if (te >= END_RES0) {
@@ -3541,6 +3626,7 @@ window.addEventListener('keydown', e => {
   if (S.mode === 'menu' && S.lb) {
     if (e.code === 'Escape') { mpLeave(); e.preventDefault(); return; }
     if (e.repeat) return;
+    if (e.code === 'KeyT') { mpToggleTrans(); e.preventDefault(); return; }
     if (e.code === 'Enter' || e.code === 'NumpadEnter') { if (NET.host) mpStart(); else mpToggleReady(); }
     else if (e.code === 'ArrowLeft' || e.code === 'ArrowUp' || e.code === 'KeyA' || e.code === 'KeyW') mpCourse(-1);
     else if (e.code === 'ArrowRight' || e.code === 'ArrowDown' || e.code === 'KeyD' || e.code === 'KeyS' || e.code === 'KeyC') mpCourse(1);
