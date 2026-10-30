@@ -1,82 +1,16 @@
-# Cabrotona USA Online v3 — FPS/restauración del primer plano
+# CABROTONA USA — V12 (ONLINE RESULTS)
 
-Esta versión **quita completamente** el cambio de segundo plano de la v3 anterior que provocaba lag.
-La física vuelve a actualizarse exclusivamente con el bucle habitual `requestAnimationFrame`, como en Online Concurrente v2. No hay un segundo timer de simulación, ni autopiloto por pestaña oculta, ni progreso ficticio desde el servidor.
+Este paquete parte del `index.html` proporcionado por el usuario el 30 de octubre de 2026.
 
-## Se conservan las correcciones de los CPU
-- CPU opcionales violetas usando la **carrocería NPC original** y las texturas violetas, no Gallop ni rivales NPC multicolor.
-- Al activar CPU, completan hasta 20 autos sumando los jugadores reales; no cuentan en la clasificación.
-- Los CPU chocan con el auto propio: no pueden atravesarse. Los CPU cercanos se separan entre sí.
-- Al salir de multijugador, los autos NPC originales restauran sus colores.
-- Siguen el reloj global compartido, sistema LISTO, largada sincronizada y ranking transparente del Online Concurrente v2.
+## Cambios de multijugador
+- Menú SESSION DATA: COURSE / BEGINNER (4 LAPS), NON PLAYER CARS / YES-NO, GAME TYPE / TYPE A. Eliminadas las opciones TRANSMISSION y LAPS del panel y los controles de transmisión del lobby.
+- La pista BEGINNER en multijugador dura 4 vueltas. La carrera individual Arcade sigue en 4 vueltas.
+- El servidor registra al primer corredor que alcanza la sexta vuelta y establece el final de la carrera 2.0 segundos después. El ganador queda en primer lugar; los demás se ordenan por llegada (si cruzan dentro del margen) o distancia recorrida. Todos reciben la misma clasificación.
+- Cada jugador ve una secuencia final según su puesto: toma lateral para el ganador, derrape/alejamiento para el segundo, choque para el tercero y vuelco para cuarto en adelante. El reloj de carrera deja de actualizarse al terminar, pero la simulación continúa hasta la pantalla de RESULTS (se congela durante esa pantalla).
+- CPU violeta 00, controles del host, READY y el multijugador permanecen.
 
-## Importante sobre pestañas en segundo plano
-Con el retroceso solicitado, la **simulación local se ralentiza o pausa cuando el navegador suspende la pestaña**, como antes. El reloj global del servidor y la partida de los demás jugadores que tengan el juego activo continúan.
+## Instalación
+Subir los archivos de este ZIP a la raíz del repositorio GitHub y hacer commit en `main`. Render puede redesplegar automáticamente si está configurado. No se ha publicado remotamente.
 
-## Publicar
-
-1. Extraer el ZIP y subir todos los archivos de la raíz al repositorio `NicolasAnzevino/Cabrotona-USA` rama `main`, reemplazando los anteriores.
-2. Hacer un commit. Render desplegará automáticamente el cambio.
-3. Comprobar que aparezca `Live` en Events y recargar la página sin caché.
-
-## Ejecución local
-
-```bash
-pip install -r requirements.txt
-python server.py
-```
-
-La prueba del juego 3D en dos dispositivos reales requiere comprobarse en Render tras publicar.
-
-
-## Nuevo: ícono de pestaña Cabrotona USA
-- Se incorporó la imagen proporcionada como favicon de navegador (`favicon.ico`) y versiones PNG de 16, 32, 48, 192 y 256 píxeles.
-- `apple-touch-icon.png` para acceso directo en iPhone/iPad.
-- El servidor expone rutas específicas para los íconos. Se reemplazó el viejo favicon incrustado en el HTML.
-- No se modificaron la física, los CPU, el multijugador ni la gestión del segundo plano.
-- Para publicar: subir **todos los archivos** del ZIP a la raíz de la rama `main`, hacer commit y esperar a que Render termine el despliegue. Si aparece el ícono anterior, recargar sin caché o cerrar y reabrir la pestaña.
-
-
-## Actualización del favicon (imagen nueva del auto 41)
-Se reemplazaron únicamente las imágenes de favicon por la nueva imagen proporcionada, en tamaños 16, 32, 48, 192 y 256, además del `.ico` y `apple-touch-icon`. Se actualizó la versión de caché de las referencias en `index.html` a `v=5`. El motor, multijugador, NPC, física y servidor no fueron modificados.
-
-
-## Online v4 — selección FREE e inicio pulido
-
-- El HUD del modo FREE sube el velocímetro 43 puntos de coordenadas internas (de y=198 a y=155); Arcade/Online mantienen el medidor donde estaba.
-- Selección de auto en FREE: 15 segundos en lugar de 20 (Arcade no cambia).
-- En la etiqueta superior de la tarjeta FREE, BEGINNER para automático y PROFESSIONAL para manual, al igual que Arcade.
-- El auto amarillo del modo FREE vuelve exactamente al aspecto de la versión anterior a v4, sin las franjas y los filetes añadidos en v4.
-- Se retiró el menú HTML antiguo «Automática / Manual / Largar» que aparecía brevemente antes de cargar el motor 3D. El menú real dentro del juego se mantiene.
-- Se eliminó el logo CABROTONA USA de la esquina superior izquierda, sin restaurar el antiguo título de texto. Se conserva el favicon de la pestaña.
-
-**Publicación:** subí el contenido del ZIP a la raíz del repositorio, reemplazando los archivos anteriores; si todavía está `cabrotona-logo.png` en GitHub podés borrarlo, porque ya no se utiliza. Hacé commit en `main` para desplegar en Render. Las lógicas de multijugador, CPU y físicas no se modificaron en esta actualización.
-
-
-## v6 — Three Seven Speedway (sin desniveles)
-
-- Primer circuito rehecho como tri-óvalo asimétrico inspirado en la pista Beginner de Daytona USA: recta trasera, una recta principal con un solo cambio de dirección suave, y una curva final más cerrada.
-- Geometría **completamente plana**, sin subidas ni bajadas y sin cambiar la altura de los autos por la curvatura.
-- Se conserva el orden de cámaras **1 parachoques, 2 capó, 3 cercana, 4 trasera elevada** y la cámara 3 predeterminada.
-- No se modificó el servidor ni la lógica del multijugador. Todos los jugadores deberán usar la nueva versión del cliente para que el circuito coincida.
-- Diseño aproximado basado en referencias del juego, no copia de sus datos internos.
-
-
-## v7 — Pista orientada a la izquierda y más larga
-
-- Nuevo trazado: aprox. 3099 m por vuelta (v6: 2328 m), 3 curvas principales de izquierda, recta posterior larga y dogleg en recta de meta.
-- Altura constante Y=0; se mantienen cámara 3, HUD y multijugador de v6.
-- Solo se modificó la geometría del circuito dentro del HTML; antes de jugar online, todos deben actualizar la página.
-
-
-## v9 — Minimapa como referencia y cámara final de 180°
-
-- El minimapa durante el gameplay se refleja **horizontalmente**, como en las dos capturas del usuario.
-  Los puntos del auto, rivales y la salida se reflejan junto a la pista. El texto TRAFFIC permanece legible.
-- La cámara final arranca cerca de la vista 3, **gira 180° alrededor del Gallop** y termina
-  enfrente del vehículo, mirando hacia su carrocería mientras sigue manejándose automáticamente.
-- El piloto automático mantiene la velocidad durante GOAL, RESULTS y GAME OVER,
-  sin la congelación a 8 segundos de la versión anterior.
-- El motor se silencia al cruzar la meta; la breve fanfarria de meta no se altera.
-- Pista Three Seven de v7, cámara 3 de largada, UI de selección horizontal de v8 y multijugador se conservan.
-- Se incluyen otra vez los archivos del servidor que faltaban en el ZIP de v8.
+## Pruebas
+Comprobada sintaxis del JavaScript con `node --check`, compilación del servidor Python y conexión real de 2 sockets con 4 vueltas, ganador y clasificación compartida. La revisión visual 3D real quedó pendiente: el navegador automatizado del entorno impidió abrir la URL local.

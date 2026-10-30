@@ -24,7 +24,8 @@ START_TIME = 64.0
 LAP_BONUS = 48.0
 INTRO_SECONDS = 4.2
 COUNTDOWN_SECONDS = 3.12
-MAX_LAPS = 6
+MAX_LAPS = 4   # BEGINNER multiplayer: cuatro vueltas, igual que Arcade
+FINISH_GRACE = 2.0
 
 rooms = {}
 sessions = {}
@@ -37,7 +38,9 @@ def peer_view(peer_id, state):
 def new_session(host):
     return {"host": host, "ready": {}, "cpu": False, "phase": "lobby",
             "rid": 0, "ord": [], "introAt": 0, "countdownAt": 0,
-            "raceAt": 0, "deadline": 0, "lap": {}, "bonus": 0}
+            "raceAt": 0, "deadline": 0, "lap": {}, "bonus": 0,
+            "winner": None, "finishAt": 0.0, "results": {},
+            "finish_order": [], "last_progress": {}, "resultsAt": 0.0}
 
 
 def room_state(room_name):
@@ -47,6 +50,8 @@ def room_state(room_name):
             "ord": s["ord"], "introAt": s["introAt"],
             "countdownAt": s["countdownAt"], "raceAt": s["raceAt"],
             "deadline": s["deadline"], "bonus": s["bonus"],
+            "winner": s["winner"], "finishAt": s["finishAt"],
+            "results": s["results"],
             "serverNow": time.time()}
 
 
@@ -111,7 +116,8 @@ async def handle_command(room_name, peer_id, data):
                  introAt=now, countdownAt=now + INTRO_SECONDS,
                  raceAt=now + INTRO_SECONDS + COUNTDOWN_SECONDS,
                  deadline=now + INTRO_SECONDS + COUNTDOWN_SECONDS + START_TIME,
-                 lap={pid: 0 for pid in players}, bonus=0)
+                 lap={pid: 0 for pid in players}, bonus=0, winner=None,
+                 finishAt=0.0, results={}, finish_order=[], last_progress={}, resultsAt=0.0)
         for pid in players:
             room[pid]["presence"]["p"] = None
         await publish_state(room_name)
@@ -119,7 +125,8 @@ async def handle_command(room_name, peer_id, data):
         if peer_id != s["host"] or s["phase"] == "lobby":
             return
         s.update(phase="lobby", ord=[], introAt=0, countdownAt=0,
-                 raceAt=0, deadline=0, lap={}, ready={}, bonus=0)
+                 raceAt=0, deadline=0, lap={}, ready={}, bonus=0, winner=None,
+                 finishAt=0.0, results={}, finish_order=[], last_progress={}, resultsAt=0.0)
         await publish_state(room_name)
 
 
@@ -191,16 +198,24 @@ async def websocket_handler(request):
                 # Host flag and racing phase are owned by the server.
                 state["presence"]["h"] = int(s["host"] == peer_id)
                 state["presence"]["st"] = "lobby" if s["phase"] == "lobby" else "race"
-                if (s["phase"] in ("intro", "race") and peer_id in s["lap"] and
+                if (s["phase"] == "race" and peer_id in s["lap"] and
                         isinstance(update.get("p"), list) and s["raceAt"] <= time.time() < s["deadline"]):
-                    lap = max(0, min(MAX_LAPS, int(update["p"][5])))
+                    progress = update["p"]
+                    s["last_progress"][peer_id] = max(0, progress[0])
+                    lap = max(0, min(MAX_LAPS, int(progress[5])))
                     prev = s["lap"][peer_id]
                     if lap == prev + 1:
                         s["lap"][peer_id] = lap
-                        if lap < MAX_LAPS:
+                        if lap < MAX_LAPS and not s["winner"]:
                             s["deadline"] += LAP_BONUS
                             s["bonus"] += 1
                             await publish_state(room_name)
+                    if (lap >= MAX_LAPS and peer_id not in s["finish_order"]):
+                        s["finish_order"].append(peer_id)
+                        if s["winner"] is None:
+                            s["winner"] = peer_id
+                            s["finishAt"] = time.time() + FINISH_GRACE
+                        await publish_state(room_name)
                 await relay(room_name, {"type": "peer_presence", "id": peer_id, "patch": update}, exclude=peer_id)
             elif typ == "command" and room_name and peer_id in rooms.get(room_name, {}):
                 await handle_command(room_name, peer_id, data)
@@ -227,6 +242,14 @@ async def websocket_handler(request):
     return ws
 
 
+def calculate_results(s):
+    """Winner is first to cross the line; remaining standings are frozen at T+2s."""
+    ordered = [pid for pid in s["finish_order"] if pid in s["ord"]]
+    remaining = [pid for pid in s["ord"] if pid not in ordered]
+    remaining.sort(key=lambda pid: (-s["last_progress"].get(pid, 0), s["ord"].index(pid)))
+    return {pid: i + 1 for i, pid in enumerate(ordered + remaining)}
+
+
 async def ticker(app):
     while True:
         await asyncio.sleep(0.2)
@@ -234,13 +257,24 @@ async def ticker(app):
             if s["phase"] == "intro" and time.time() >= s["raceAt"]:
                 s["phase"] = "race"
                 await publish_state(name)
-            elif s["phase"] == "race" and time.time() >= s["deadline"]:
+            elif s["phase"] == "race" and s["winner"] and time.time() >= s["finishAt"]:
+                s["phase"] = "results"
+                s["results"] = calculate_results(s)
+                s["resultsAt"] = time.time()
+                await publish_state(name)
+            elif s["phase"] == "race" and not s["winner"] and time.time() >= s["deadline"]:
                 s["phase"] = "timeout"
                 s["timeoutAt"] = time.time()
                 await publish_state(name)
+            elif s["phase"] == "results" and time.time() >= s.get("resultsAt", 0) + 17:
+                s.update(phase="lobby", ord=[], introAt=0, countdownAt=0,
+                         raceAt=0, deadline=0, lap={}, ready={}, bonus=0, winner=None,
+                         finishAt=0.0, results={}, finish_order=[], last_progress={}, resultsAt=0.0)
+                await publish_state(name)
             elif s["phase"] == "timeout" and time.time() >= s.get("timeoutAt", 0) + 17:
                 s.update(phase="lobby", ord=[], introAt=0, countdownAt=0,
-                         raceAt=0, deadline=0, lap={}, ready={}, bonus=0)
+                         raceAt=0, deadline=0, lap={}, ready={}, bonus=0, winner=None,
+                 finishAt=0.0, results={}, finish_order=[], last_progress={}, resultsAt=0.0)
                 await publish_state(name)
 
 
