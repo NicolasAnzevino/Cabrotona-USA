@@ -875,8 +875,36 @@ function carContacts(dt) {
     }
   }
 }
-// Cinematográficas inspiradas en las tomas temporizadas del video de referencia.
-// RESULTS comienza al terminar la carrera, sea por meta o por reloj.
+/* ---------------------------------------------------------------------
+   Cinemática final (estilo Daytona USA). Corte a una cámara FIJA al costado de la pista, con zoom de operador:
+   el auto llega desde lejos y, según el puesto:
+     1.º  frena y se desliza hasta quedar de perfil junto a la valla (la pose de la pantalla RESULTS)
+     2.º  intenta lo mismo, pierde la cola en un derrape de costado, lo corrige y se aleja
+     3.º  se va contra la valla, rebota y queda detenido unos metros más adelante
+     4.º+ se estrella y vuelca varias veces hasta quedar parado, destrozado
+   Todo es función del tiempo (no depende de la entrada del jugador): igual en todos los clientes.
+   --------------------------------------------------------------------- */
+const CINE_LEAD = 1.2;   // segundos a velocidad constante antes de la maniobra
+const CINE_IMPACT = { 3: 0.8, 4: 0.6 };
+const cSm = (t, a, b) => { const u = clamp((t - a) / (b - a), 0, 1); return u * u * (3 - 2 * u); };
+function cineWp(dist, lat, h) {
+  const q = frameAt(dist);
+  return [q.cx + q.rx * lat + q.ux * h, q.cy + q.ry * lat + q.uy * h, q.cz + q.rz * lat + q.uz * h];
+}
+// Parámetros de cámara/estación para el puesto actual (se recalculan si el servidor corrige el puesto).
+function cinePlan(c) {
+  const v0 = c.v0, side = c.side, tI = CINE_LEAD + (CINE_IMPACT[Math.min(c.place, 4)] || 0);
+  c.plan = c.place;
+  c.wallD = side * (WALL - 3.6);
+  let ahead, sep, h;
+  if (c.place === 1) { ahead = v0 * CINE_LEAD + 58 + 3; sep = 7.4; h = 1.15; }
+  else if (c.place === 2) { ahead = v0 * (CINE_LEAD + 1.0); sep = 10.5; h = 1.5; }
+  else if (c.place === 3) { ahead = v0 * tI + 14; sep = 10.5; h = 1.5; }
+  else { ahead = v0 * tI + 62; sep = 14; h = 1.7; }
+  c.station = { dist: c.start + ahead, lat: c.wallD - side * sep, h };
+  c.camPos = cineWp(c.station.dist, c.station.lat, h);
+  c.lookH = c.place === 1 ? 1.5 : 1.1;
+}
 function beginFinish(place, completed = true) {
   if (S.mode === 'finish') {
     P.place = place; S.resultPlace = place;
@@ -886,17 +914,10 @@ function beginFinish(place, completed = true) {
   P.finished = true; P.place = place; S.resultPlace = place; S.endGoal = !!completed;
   S.mode = 'finish'; S.finT = 0.001; S.view = 2; applyView();
   if (R3) R3.camAng = 0;
-  const startSpeed = clamp(Math.max(P.v, 43), 43, 75);
-  const targetDist = P.dist + startSpeed * 3.4;
-  const ff = frameAt(targetDist);
-  const side = P.d < 0 ? -1 : 1;
-  // Una cámara sobre el borde del asfalto espera a que el auto venga desde lejos.
-  const camPos = [ff.cx + ff.rx * (P.d + side * 10.4) + ff.ux * 2.2,
-                  ff.cy + ff.ry * (P.d + side * 10.4) + ff.uy * 2.2,
-                  ff.cz + ff.rz * (P.d + side * 10.4) + ff.uz * 2.2];
-  S.cine = {place, anchor: P.dist, targetDist, lateral: P.d, side,
-    startSpeed, camera: camPos, event: false, roll: 0, lift: 0,
-    hideCar: false, frozenTime: raceT, originLane: P.d};
+  const v0 = clamp(Math.max(P.v, 43), 43, 75);
+  S.cine = { place, side: P.d < 0 ? -1 : 1, v0, start: P.dist, d0: P.d, event: false, roll: 0, lift: 0,
+    hideCar: false, frozenTime: raceT, look: null, plan: 0 };
+  cinePlan(S.cine);
   S.te = null; msgs = []; P.braking = false;
   if (A.c) { const t = A.c.currentTime;
     A.eg.gain.setTargetAtTime(0, t, 0.045);
@@ -909,58 +930,50 @@ function endingTick(dt) {
   S.finT += dt;
   const t = S.finT;
   if (!c) { if (t >= END_TOTAL) showMenu(); return; }
-  const smooth = (a, b) => { const v = clamp((t - a) / (b - a), 0, 1); return v * v * (3 - 2 * v); };
-  P.braking = false; P.thr = 0; P.acc = 0; P.rpm = 0; P.gear = 3;
-  P.steer = 0; P.inv = 1;
-  const stepForward = () => { P.dist += P.v * dt * Math.max(0.22, Math.cos(P.psi || 0)); };
-  // Primer plano: auto visto a lo lejos, aproximación y pausa lateral, como en 0-10s del video.
+  if (c.plan !== c.place) cinePlan(c);
+  const { v0, side, d0, wallD } = c, tb = CINE_LEAD;
+  let v = v0, d = d0, phi = 0, acc = 0;
   if (c.place === 1) {
-    const slowing = smooth(2.7, 4.35);
-    P.v = c.startSpeed * (1 - slowing);
-    P.phi += (0 - P.phi) * Math.min(1, dt * 4.0);
-    P.psi += (0 - P.psi) * Math.min(1, dt * 4.0);
-    P.d += (c.lateral - P.d) * Math.min(1, dt * 3);
-    stepForward();
-    // Una corrección imperceptible para que pose cerca de la cámara y no 30m más allá.
-    if (t >= 4.35 && t < 4.5) P.dist += (c.targetDist - P.dist) * Math.min(1, dt * 7);
+    // Frenada constante (58 m) con una leve cola que se asienta: queda casi paralelo a la valla.
+    const Ts = 2 * 58 / v0, u = clamp((t - tb) / Ts, 0, 1);
+    v = t < tb ? v0 : v0 * (1 - u);
+    d = lerp(d0, wallD, cSm(t, 0.4, tb + Ts * 0.85));
+    phi = side * (0.26 * Math.sin(Math.PI * u) + 0.06 * cSm(t, tb, tb + Ts));
+    acc = t > tb && u < 1 ? -70 : 0;
   } else if (c.place === 2) {
-    // Segundo: acercamiento, derrape transversal bajo la toma alta y salida.
-    const skid = smooth(2.65, 4.3), recover = smooth(5.05, 6.9);
-    P.v = c.startSpeed * (1 - 0.48 * skid) + 17 * recover;
-    P.psi = c.side * (0.89 * skid * (1 - recover));
-    P.phi = P.psi + c.side * 0.52 * Math.sin(Math.PI * skid) * (1 - recover);
-    P.d = clamp(c.lateral + c.side * 5.0 * skid, -WALL + 1.55, WALL - 1.55);
-    stepForward();
-    if (!c.event && t > 3.0) { c.event = true; thump(0.2); }
+    // Derrape de costado frente a la cámara, contravolante y salida.
+    const dr = cSm(t, tb, tb + 0.8), back = cSm(t, tb + 2.0, tb + 3.0);
+    v = v0 * (1 - 0.5 * cSm(t, tb, tb + 2.0)) + v0 * 0.55 * cSm(t, tb + 2.8, tb + 5.8);
+    d = lerp(lerp(d0, side * (WALL - 5.2), cSm(t, tb, tb + 1.8)), d0 * 0.4, cSm(t, tb + 2.4, tb + 4.2));
+    phi = side * (1.2 * dr * (1 - back) - 0.2 * Math.sin(Math.PI * clamp((t - tb - 2.2) / 1.2, 0, 1)));
+    acc = t > tb && t < tb + 2.4 ? -45 : 0;
+    if (!c.event && t >= tb + 0.15) { c.event = true; thump(0.25); beep(520, 0.7, 'sawtooth', 0.04); }
   } else if (c.place === 3) {
-    // Tercero: de lejos al choque en la pared; el auto queda varado en el borde.
-    const impact = smooth(2.75, 3.9);
-    P.v = c.startSpeed * (1 - smooth(3.3, 4.2));
-    P.psi = c.side * 0.75 * impact; P.phi = c.side * 1.02 * impact;
-    P.d = clamp(c.lateral + c.side * 22 * impact, -WALL + 1.15, WALL - 1.15);
-    stepForward();
-    if (!c.event && t >= 3.85) {
-      c.event = true; P.damage = Math.max(P.damage, .68); P.damageSide = c.side;
-      P.crash = .68; thump(.68);
-    }
-    P.crash = Math.max(0, P.crash - dt);
+    // Se tira contra la valla, rebota y se arrastra unos metros.
+    const tI = tb + CINE_IMPACT[3], hit = clamp((t - tb) / CINE_IMPACT[3], 0, 1);
+    const Td = 1.1, after = clamp((t - tI) / Td, 0, 1);
+    v = t < tI ? v0 : v0 * 0.55 * (1 - after);
+    const wallHit = side * (WALL - 1.25);
+    d = t < tI ? lerp(d0, wallHit, Math.pow(hit, 2.2)) : wallHit - side * 1.3 * cSm(t, tI, tI + 0.5);
+    phi = t < tI ? side * 0.55 * hit : side * lerp(0.55, -0.38, cSm(t, tI, tI + 0.6)) * 1;
+    if (t >= tI + 0.6) phi = side * lerp(-0.38, -0.3, cSm(t, tI + 0.6, tI + 2));
+    if (!c.event && t >= tI) { c.event = true; P.damage = Math.max(P.damage, .68); P.damageSide = side; P.crash = .7; thump(.7); }
   } else {
-    // Cuarto en adelante: trompo, choque y múltiples vueltas de campana visibles.
-    const hit = smooth(2.1, 3.45), moving = smooth(4.0, 6.5);
-    P.v = c.startSpeed * (1 - 0.70 * hit) * (1 - 0.7 * moving);
-    P.psi = c.side * .95 * hit; P.phi = c.side * 1.2 * hit;
-    P.d = clamp(c.lateral + c.side * 21 * hit, -WALL + 1.20, WALL - 1.20);
-    stepForward();
-    const rollT = Math.max(0, t - 3.0);
-    c.roll = Math.min(Math.PI * 5.5, rollT * 8.2);
-    c.lift = rollT > 0 ? Math.abs(Math.sin(c.roll * .5)) * 1.30 : 0;
-    c.hideCar = t > 6.8;
-    if (!c.event && t >= 3.15) {
-      c.event = true; P.damage = Math.max(P.damage, .85); P.damageSide = c.side;
-      P.crash = .7; thump(.85);
-    }
-    P.crash = Math.max(0, P.crash - dt);
+    // Choque fuerte y tres vueltas de campana; termina sobre las ruedas, parado.
+    const tI = tb + CINE_IMPACT[4], hit = clamp((t - tb) / CINE_IMPACT[4], 0, 1);
+    const Tf = 2.8, u = clamp((t - tI) / Tf, 0, 1), eo = 1 - (1 - u) * (1 - u);
+    v = t < tI ? v0 : v0 * 0.85 * (1 - u);
+    const wallHit = side * (WALL - 1.25);
+    d = t < tI ? lerp(d0, wallHit, Math.pow(hit, 2.2)) : wallHit - side * 8 * cSm(t, tI, tI + 1.8);
+    phi = t < tI ? side * 0.5 * hit : side * 0.5 * Math.sin(Math.PI * u) * (1 - 0.3 * u);
+    c.roll = t < tI ? 0 : Math.PI * 6 * eo;
+    c.lift = t < tI ? 0 : Math.abs(Math.sin(c.roll * 0.5)) * 1.7 * (1 - u * u);
+    if (!c.event && t >= tI) { c.event = true; P.damage = Math.max(P.damage, .85); P.damageSide = side; P.crash = .8; thump(.9); beep(120, 0.45, 'sawtooth', 0.12); }
   }
+  P.v = Math.max(0, v); P.d = clamp(d, -WALL + 1.05, WALL - 1.05); P.phi = phi; P.psi = 0;
+  P.dist += P.v * dt;
+  P.acc = acc; P.thr = 0; P.braking = false; P.steer = 0; P.rpm = 0; P.gear = 3; P.inv = 1;
+  P.crash = Math.max(0, P.crash - dt);
   if (t >= END_TOTAL) showMenu();
 }
 function sim(dt) {
@@ -2029,59 +2042,17 @@ function updateCamera(st, dt, snap) {
     px = po.ps[0]; py = po.ps[1]; pz = po.ps[2]; lx = po.lk[0]; ly = po.lk[1]; lz = po.lk[2]; fov = po.fv;
     frameAt(st.dist);
   } else if (endCam) {
-    // Storyboard del video: toma fija de la pista, después encuadre de costado.
-    // El 2do corta a una cámara alta y el 3ro/4to mantienen visible el accidente.
-    const c = S.cine, t = S.finT, place = c ? c.place : P.place;
-    const side = c ? c.side : 1;
-    const shot = c ? c.camera : [bx + f.rx * 10, by + 2.2, bz + f.rz * 10];
-    const ease = (a, b) => { const u = clamp((t - a) / (b - a), 0, 1); return u * u * (3 - 2 * u); };
-    // Plano general en la recta; el auto llega desde lejos, sin zoom artificial.
-    px = shot[0]; py = shot[1]; pz = shot[2];
-    lx = bx + fux * .90; ly = by + fuy * .90; lz = bz + fuz * .90;
-    fov = place === 1 ? 47 : 56;
-    if (place === 1) {
-      // Acercamiento discreto desde el costado; queda grande y de perfil.
-      const e = ease(2.8, 4.35);
-      const sx = bx - fx * .7 + f.rx * side * 8.5 + fux * 1.9;
-      const sy = by - fy * .7 + f.ry * side * 8.5 + fuy * 1.9;
-      const sz = bz - fz * .7 + f.rz * side * 8.5 + fuz * 1.9;
-      px = lerp(px, sx, e); py = lerp(py, sy, e); pz = lerp(pz, sz, e);
-      fov = lerp(49, 42, e);
-    } else if (place === 2) {
-      const e = ease(4.0, 4.6);
-      // Corte tipo Daytona a plano alto posterior que revela el derrape;
-      // luego una toma de pista deja al auto alejarse en lugar de perseguirlo.
-      const sx = bx - fx * 8 + f.rx * (-side * 3.8) + fux * 7.7;
-      const sy = by - fy * 8 + f.ry * (-side * 3.8) + fuy * 7.7;
-      const sz = bz - fz * 8 + f.rz * (-side * 3.8) + fuz * 7.7;
-      px = lerp(px, sx, e); py = lerp(py, sy, e); pz = lerp(pz, sz, e);
-      if (t > 6.5) {
-        // La cámara se queda donde estaba mientras el auto sale de cuadro.
-        const p0 = frameAt(c.targetDist + 22);
-        const sx0 = p0.cx + p0.rx * (c.lateral + side * 13) + p0.ux * 5;
-        const sy0 = p0.cy + p0.ry * (c.lateral + side * 13) + p0.uy * 5;
-        const sz0 = p0.cz + p0.rz * (c.lateral + side * 13) + p0.uz * 5;
-        const e2 = ease(6.5, 7.3);
-        px = lerp(px, sx0, e2); py = lerp(py, sy0, e2); pz = lerp(pz, sz0, e2);
-      }
-      fov = lerp(56, 58, e);
-    } else if (place === 3) {
-      const e = ease(3.1, 4.2);
-      const sx = bx - fx * 9.5 + f.rx * (-side * 11.5) + fux * 3.4;
-      const sy = by - fy * 9.5 + f.ry * (-side * 11.5) + fuy * 3.4;
-      const sz = bz - fz * 9.5 + f.rz * (-side * 11.5) + fuz * 3.4;
-      px = lerp(px, sx, e); py = lerp(py, sy, e); pz = lerp(pz, sz, e);
-      fov = lerp(56, 52, e);
-    } else {
-      // La cámara no sigue el vuelco hasta el infinito: queda mirando la pista.
-      const e = ease(3.4, 5.1);
-      const p0 = frameAt(c.targetDist + 10);
-      const sx = p0.cx + p0.rx * (c.lateral + side * 11) + p0.ux * 3.6;
-      const sy = p0.cy + p0.ry * (c.lateral + side * 11) + p0.uy * 3.6;
-      const sz = p0.cz + p0.rz * (c.lateral + side * 11) + p0.uz * 3.6;
-      px = lerp(px, sx, e); py = lerp(py, sy, e); pz = lerp(pz, sz, e);
-      fov = lerp(55, 65, e);
-    }
+    // Cámara fija de pista con paneo y zoom de operador: sigue al auto sin moverse del lugar.
+    const c = S.cine;
+    if (c) {
+      px = c.camPos[0]; py = c.camPos[1]; pz = c.camPos[2];
+      const tgt = [bx + fux * c.lookH, by + fuy * c.lookH, bz + fuz * c.lookH];
+      if (!c.look || snap) c.look = tgt.slice();
+      else { const k = 1 - Math.exp(-dt * 11); for (let i = 0; i < 3; i++) c.look[i] += (tgt[i] - c.look[i]) * k; }
+      lx = c.look[0]; ly = c.look[1]; lz = c.look[2];
+      const dd = Math.hypot(bx - px, by - py, bz - pz), Wh = 7.4 + 0.35 * Math.max(0, dd - 7);   // ancho horizontal visible: el auto ocupa ~2/3 de la pantalla al detenerse
+      fov = clamp(2 * Math.atan(Wh / (16 / 9) / 2 / Math.max(dd, 1)) * 180 / Math.PI, 9, 46);
+    } else { px = bx + f.rx * 10; py = by + 2.2; pz = bz + f.rz * 10; lx = bx; ly = by + 0.9; lz = bz; fov = 56; }
   } else if (v.hood) {
     px = bx + fx * v.fwd + f.ux * v.up; py = by + fy * v.fwd + f.uy * v.up; pz = bz + fz * v.fwd + f.uz * v.up;
     lx = bx + fx * v.look + f.ux * v.lookUp; ly = by + fy * v.look + f.uy * v.lookUp; lz = bz + fz * v.look + f.uz * v.lookUp;
@@ -3511,11 +3482,6 @@ function render(dt) {
   const showP = true;
   playerMesh.group.visible = !(S.mode === 'finish' && S.cine && S.cine.hideCar);
   if (S.mode !== 'timeout') placeCar(playerMesh, P, dt, P.tumble > 0 && P.kind === 'flip');
-  // El vuelco cinematográfico necesita rotar el modelo REAL, no solo una variable de física.
-  if (S.mode === 'finish' && S.cine && S.cine.place >= 4) {
-    playerMesh.group.rotateZ(S.cine.roll || 0);
-    playerMesh.group.position.y += S.cine.lift || 0;
-  }
   if (S.mode !== 'timeout') animateCarGlass(playerMesh, P, dt);
   updateDamageMesh();
   if (S.mode !== 'menu' && S.mode !== 'timeout' && P.tumble <= 0) {
@@ -3585,6 +3551,22 @@ function repaintMesh(mesh, car, number = '41') {
   } catch (e) { }
   setLook(keep); PAINT_NUM = oldNumber; mesh.look = car;
 }
+/* Restaura un NPC con SU definición (color/sec/accent/num/spons). repaintMesh() es solo para autos con "look" (top/side/body):
+   usarlo con el objeto de simulación dejaba body = undefined y la carrocería quedaba negra después de cada carrera. */
+function repaintNpc(mesh, def) {
+  try {
+    mesh.bodyMat.color.set(def.color);
+    if (mesh.cabMat && mesh.cabMat !== mesh.bodyMat) mesh.cabMat.color.set(def.color);
+    if (mesh.lowerMat) mesh.lowerMat.color.set(def.sec);
+    (mesh.paints || []).forEach(p => {
+      if (!p.c) return;
+      p.def = def;
+      const g = p.c.getContext('2d'); g.clearRect(0, 0, p.w, p.h); p.fn(g, p.w, p.h, p.def);
+      if (p.tex) p.tex.needsUpdate = true;
+    });
+  } catch (e) { }
+  mesh.look = def;
+}
 let curLook = CARS[0], curNumber = '41';
 function repaintPlayer(trans) {
   const seat = S.mp ? (S.mySeat || 1) : 0;
@@ -3601,7 +3583,7 @@ function showMenu(keepSel) {
   resetPlayer(); makeCars(); finCount = 0; raceT = 0;
   // Restaurar los NPC originales cuando se vuelve de multiplayer al modo individual.
   if (carMeshes.length) carMeshes.forEach((m, i) => {
-    if (cars[i]) repaintMesh(m, cars[i]);
+    if (cars[i]) repaintNpc(m, cars[i]);
     // Cada NPC recupera sus propias texturas; nunca arrastra el 00 de Multiplayer.
     if (m.group) { m.group.rotation.set(0, 0, 0); m.group.scale.set(1, 1, 1); }
   });
