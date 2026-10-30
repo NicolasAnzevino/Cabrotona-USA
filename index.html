@@ -898,12 +898,13 @@ function cinePlan(c) {
   c.wallD = side * (WALL - 3.6);
   let ahead, sep, h;
   if (c.place === 1) { ahead = v0 * CINE_LEAD + 58 + 3; sep = 7.4; h = 1.15; }
-  else if (c.place === 2) { ahead = v0 * (CINE_LEAD + 1.0); sep = 10.5; h = 1.5; }
+  else if (c.place === 2) { ahead = v0 * (CINE_LEAD + 1.0) + 26; sep = 15; h = 1.5; }
   else if (c.place === 3) { ahead = v0 * tI + 14; sep = 10.5; h = 1.5; }
   else { ahead = v0 * tI + 62; sep = 14; h = 1.7; }
   c.station = { dist: c.start + ahead, lat: c.wallD - side * sep, h };
   c.camPos = cineWp(c.station.dist, c.station.lat, h);
-  c.lookH = c.place === 1 ? 1.5 : 1.1;
+  c.lookH = c.place === 1 ? 1.45 : 1.1;
+  c.wh = c.place === 1 ? 5.9 : 7.4;   // ancho horizontal visible al detenerse: en el 1.º el auto casi llena la pantalla
 }
 function beginFinish(place, completed = true) {
   if (S.mode === 'finish') {
@@ -938,12 +939,12 @@ function endingTick(dt) {
     const Ts = 2 * 58 / v0, u = clamp((t - tb) / Ts, 0, 1);
     v = t < tb ? v0 : v0 * (1 - u);
     d = lerp(d0, wallD, cSm(t, 0.4, tb + Ts * 0.85));
-    phi = side * (0.26 * Math.sin(Math.PI * u) + 0.06 * cSm(t, tb, tb + Ts));
+    phi = side * 0.30 * Math.sin(Math.PI * clamp((t - tb) / (Ts * 0.55), 0, 1)) - side * 0.42 * cSm(t, tb + Ts * 0.45, tb + Ts);   // cola hacia la valla y la trompa termina girada hacia la cámara (3/4 frontal)
     acc = t > tb && u < 1 ? -70 : 0;
   } else if (c.place === 2) {
     // Derrape de costado frente a la cámara, contravolante y salida.
     const dr = cSm(t, tb, tb + 0.8), back = cSm(t, tb + 2.0, tb + 3.0);
-    v = v0 * (1 - 0.5 * cSm(t, tb, tb + 2.0)) + v0 * 0.55 * cSm(t, tb + 2.8, tb + 5.8);
+    v = v0 * 0.5 * (1 + (1 - cSm(t, tb, tb + 2.0))) * (1 - cSm(t, tb + 2.0, tb + 3.8));   // derrape y se detiene lejos de la cámara
     d = lerp(lerp(d0, side * (WALL - 5.2), cSm(t, tb, tb + 1.8)), d0 * 0.4, cSm(t, tb + 2.4, tb + 4.2));
     phi = side * (1.2 * dr * (1 - back) - 0.2 * Math.sin(Math.PI * clamp((t - tb - 2.2) / 1.2, 0, 1)));
     acc = t > tb && t < tb + 2.4 ? -45 : 0;
@@ -2050,7 +2051,7 @@ function updateCamera(st, dt, snap) {
       if (!c.look || snap) c.look = tgt.slice();
       else { const k = 1 - Math.exp(-dt * 11); for (let i = 0; i < 3; i++) c.look[i] += (tgt[i] - c.look[i]) * k; }
       lx = c.look[0]; ly = c.look[1]; lz = c.look[2];
-      const dd = Math.hypot(bx - px, by - py, bz - pz), Wh = 7.4 + 0.35 * Math.max(0, dd - 7);   // ancho horizontal visible: el auto ocupa ~2/3 de la pantalla al detenerse
+      const dd = Math.hypot(bx - px, by - py, bz - pz), Wh = (c.wh || 7.4) + 0.35 * Math.max(0, dd - 7);   // ancho horizontal visible: el auto ocupa ~2/3 de la pantalla al detenerse
       fov = clamp(2 * Math.atan(Wh / (16 / 9) / 2 / Math.max(dd, 1)) * 180 / Math.PI, 9, 46);
     } else { px = bx + f.rx * 10; py = by + 2.2; pz = bz + f.rz * 10; lx = bx; ly = by + 0.9; lz = bz; fov = 56; }
   } else if (v.hood) {
@@ -3474,7 +3475,7 @@ function render(dt) {
   remoteMeshes.forEach(m => { m.group.visible = false; });
   cars.forEach((c, i) => {
     const m = carMeshes[i], remote = S.mp && c.remote ? remoteMeshes[i] : null;
-    const v = !c.unused && (!S.mp || !!c.remote || !!c.cpu) && vis(c);
+    const v = S.mode !== 'finish' && !c.unused && (!S.mp || !!c.remote || !!c.cpu) && vis(c);   // en la cinemática final no se ve ningún rival: podrían tapar la toma
     m.group.visible = v && !remote;
     if (remote) remote.group.visible = v;
     if (v && S.mode !== 'timeout') placeCar(remote || m, c, dt, false);
