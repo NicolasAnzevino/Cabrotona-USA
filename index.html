@@ -124,6 +124,13 @@ body {
 @media (prefers-reduced-motion: reduce) { .btn:active { transform: none; } }
 </style>
 
+<style id="dmenu">
+/* Pausa y entrada de Multiplayer se dibujan en el canvas, con el mismo motor que el Main Menu (mmDraw).
+   Los <input> reales siguen existiendo (teclado, móvil, pegar) pero fuera de la vista: el canvas muestra su valor. */
+#mpBox.overlay { position: absolute; inset: auto; left: -9999px; top: 0; width: 220px; height: 120px; padding: 0; opacity: 0; background: none; overflow: hidden; display: block; }
+#mpBox.overlay[hidden] { display: none; }
+#pauseBox { display: none !important; }
+</style>
 <main class="shell">
   <header class="top">
     <div class="tools">
@@ -154,7 +161,7 @@ body {
       </div>
     </section>
 
-    <section class="overlay" id="mpBox" hidden>
+    <section class="overlay dm" id="mpBox" hidden>
       <div class="card mpcard">
         <h2>Multi<em>player</em></h2>
         <label class="fld">Nombre <input id="mpName" maxlength="12" autocomplete="off" spellcheck="false" placeholder="Tu nombre"></label>
@@ -166,8 +173,8 @@ body {
       </div>
     </section>
 
-    <section class="overlay" id="pauseBox" hidden>
-      <div class="card">
+    <section class="overlay dm" id="pauseBox" hidden>
+      <div class="card dmbg">
         <h2>Pausa</h2>
         <div class="row">
           <button class="btn ghost" id="quitBtn" type="button">Abandonar</button>
@@ -900,7 +907,7 @@ function cinePlan(c) {
   if (c.place === 1) { ahead = v0 * CINE_LEAD + 58 + 3; sep = 7.4; h = 1.15; }
   else if (c.place === 2) { ahead = v0 * (CINE_LEAD + 1.0) + 26; sep = 15; h = 1.5; }
   else if (c.place === 3) { ahead = v0 * tI + 14; sep = 10.5; h = 1.5; }
-  else { ahead = v0 * tI + 62; sep = 14; h = 1.7; }
+  else { ahead = v0 * tI + 66; sep = 14; h = 1.7; }
   c.station = { dist: c.start + ahead, lat: c.wallD - side * sep, h };
   c.camPos = cineWp(c.station.dist, c.station.lat, h);
   c.lookH = c.place === 1 ? 1.45 : 1.1;
@@ -1003,18 +1010,28 @@ function endingTick(dt) {
     if (t >= tI + 0.6) phi = side * lerp(-0.38, -0.3, cSm(t, tI + 0.6, tI + 2));
     if (!c.event && t >= tI) { c.event = true; P.damage = Math.max(P.damage, .68); P.damageSide = side; P.crash = .7; thump(.7); }
   } else {
-    // Impacto con la valla + UN vuelco pesado (en lugar de girar como un trompo).
-    // El coche pierde velocidad durante el vuelco, rebota sobre el asfalto y se asienta.
+    // Choque contra la valla y vuelco en tres tiempos, sin giros bruscos:
+    //  1) el auto ya viene con la cola suelta y toca la valla de costado
+    //  2) el golpe lo levanta: se inclina sobre las ruedas de adentro (roll gradual) y sube en una parábola
+    //  3) cae, da un último giro sobre el asfalto, rebota dos veces cada vez más chico y queda sobre las ruedas
     const tI = tb + CINE_IMPACT[4], hit = clamp((t - tb) / CINE_IMPACT[4], 0, 1);
-    const Tf = 3.4, u = clamp((t - tI) / Tf, 0, 1);
-    v = t < tI ? v0 : v0 * 0.72 * (1 - cSm(t, tI, tI + Tf));
+    const Tf = 4.2, u = clamp((t - tI) / Tf, 0, 1), el = Math.max(0, t - tI);
+    v = t < tI ? v0 : v0 * 0.8 * Math.pow(1 - u, 1.35);
     const wallHit = side * (WALL - 1.25);
     d = t < tI ? lerp(d0, wallHit, Math.pow(hit, 2.2))
-      : lerp(wallHit, wallHit - side * 4.5, cSm(t, tI, tI + Tf));
-    phi = t < tI ? side * 0.42 * hit : side * (0.44 * (1 - cSm(t, tI, tI + Tf)));
-    c.roll = t < tI ? 0 : -side * TAU * cSm(t, tI + 0.08, tI + Tf);
-    c.lift = t < tI ? 0 : 1.55 * Math.pow(Math.sin(c.roll * 0.5), 2) * (1 - 0.22 * u);
+      : lerp(wallHit, wallHit - side * 5.5, cSm(t, tI + 0.15, tI + Tf));
+    phi = t < tI ? side * 0.5 * hit
+      : side * (0.5 - 0.95 * cSm(t, tI, tI + 2.4) + 0.2 * cSm(t, tI + 2.4, tI + Tf));
+    // El roll arranca despacio (el auto "se tumba") y acelera: la primera vuelta ocurre en el aire (salto del golpe),
+    // la segunda ya sobre el asfalto, más lenta; termina en dos vueltas exactas, o sea sobre las ruedas.
+    c.roll = t < tI ? 0 : -side * (TAU * cSm(el, 0.1, 1.7) + TAU * cSm(el, 1.5, Tf));
+    // Altura: sin hundir la carrocería en el asfalto (según el ángulo) + el salto del golpe + dos rebotes que se apagan.
+    const rr = Math.abs(c.roll), ground = 0.95 * Math.abs(Math.sin(rr)) + 1.55 * Math.max(0, -Math.cos(rr));
+    const air = 1.9 * Math.sin(Math.PI * clamp(el / 1.6, 0, 1)) + 0.55 * Math.sin(Math.PI * clamp((el - 2.0) / 0.7, 0, 1)) + 0.2 * Math.sin(Math.PI * clamp((el - 2.8) / 0.5, 0, 1));
+    c.lift = t < tI ? 0 : ground + air;
     if (!c.event && t >= tI) { c.event = true; P.damage = Math.max(P.damage, .85); P.damageSide = side; P.crash = .8; thump(.9); beep(120, 0.45, 'sawtooth', 0.12); }
+    if (!c.land && t >= tI + 1.6) { c.land = true; thump(.7); }
+    if (!c.land2 && t >= tI + 2.7) { c.land2 = true; thump(.35); }
   }
   P.v = Math.max(0, v); P.d = clamp(d, -WALL + 1.05, WALL - 1.05); P.phi = phi; P.psi = 0;
   P.dist += P.v * dt;
@@ -1030,6 +1047,13 @@ function sim(dt) {
     return;
   }
   if (S.mode === 'finish' && S.mp) { endingTick(dt); return; }
+  if (S.mode === 'finish' && S.finT >= SOLO_END_RES0) {
+    // RESULTS (Arcade / FREE): el mundo, los rivales y el cronómetro quedan congelados.
+    S.finT += dt;
+    if (P.v !== 0) { P.v = 0; P.acc = 0; P.thr = 0; P.braking = false; for (const c of cars) { c.v = 0; c.run = false; c.lv = 0; } }
+    if (S.finT >= SOLO_END_TOTAL) showMenu();
+    return;
+  }
   // En Arcade/Free la pantalla de resultados queda quieta; en multiplayer la
   // simulación de cierre está a cargo de endingTick y su cámara personalizada.
   if (S.mode === 'menu') {
@@ -2430,6 +2454,126 @@ function mmBand(y0, y1) {   // franjas blanco y negro de la selección de pista 
   const cw = 34, ch = 20;
   for (let r = 0; r < Math.ceil((y1 - y0) / ch); r++) for (let c = 0; c < Math.ceil(HW / cw); c++) { hx.fillStyle = (c + r) % 2 ? '#e9e9ee' : '#1b1b1f'; hx.fillRect(c * cw, y0 + r * ch, cw, ch); }
 }
+/* ---------------------------------------------------------------------
+   Menús dibujados (Pausa y entrada de Multiplayer): MISMO motor visual y de entrada que el Main Menu.
+   Fondo naranja con rayas, franjas blanco y negro, cartel rojo, opciones sobre barra negra con texto amarillo,
+   cuadro de descripción oscuro con borde blanco. El mouse hace lo mismo en todos: pasar sobre una opción la selecciona
+   (mano), un campo de texto muestra el cursor de escribir, y lo demás no reacciona a nada.
+   --------------------------------------------------------------------- */
+function mmBackdrop(x, y, w, h, t) {
+  hx.save(); hx.beginPath(); hx.rect(x, y, w, h); hx.clip();
+  const bg = hx.createLinearGradient(0, y, 0, y + h); bg.addColorStop(0, '#ffcc1c'); bg.addColorStop(0.55, '#ffa91e'); bg.addColorStop(1, '#f0701c');
+  hx.fillStyle = bg; hx.fillRect(x, y, w, h);
+  for (let k = 0; k < 11; k++) {
+    const sx = ((t * 36 + k * 93) % (w + 240)) - 120 + x, sw = 26 + (k * 37) % 70;
+    hx.fillStyle = k % 2 ? 'rgba(255,255,255,.10)' : 'rgba(190,60,0,.13)';
+    hx.beginPath(); hx.moveTo(sx, y + h); hx.lineTo(sx + sw, y + h); hx.lineTo(sx + sw + 150, y); hx.lineTo(sx + 150, y); hx.closePath(); hx.fill();
+  }
+  hx.fillStyle = 'rgba(160,50,0,.16)'; hx.beginPath(); hx.moveTo(x, y + h); hx.lineTo(x, y + h * 0.78); hx.lineTo(x + w, y + h * 0.52); hx.lineTo(x + w, y + h); hx.closePath(); hx.fill();
+  hx.restore();
+}
+function mmPill(text, cx, y, w) {
+  const tg = hx.createLinearGradient(0, y + 2, 0, y + 48); tg.addColorStop(0, '#e8222c'); tg.addColorStop(0.5, '#b3101a'); tg.addColorStop(1, '#6e0810');
+  hx.fillStyle = '#000'; rr(cx - w / 2, y, w, 50, 11); hx.fill(); hx.fillStyle = '#f7c519'; rr(cx - w / 2 + 3, y + 3, w - 6, 44, 9); hx.fill(); hx.fillStyle = tg; rr(cx - w / 2 + 7, y + 7, w - 14, 36, 7); hx.fill();
+  hx.font = 'italic 900 33px Georgia, serif'; hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.lineJoin = 'round';
+  hx.lineWidth = 6; hx.strokeStyle = '#5a0a0f'; hx.strokeText(text, cx, y + 26); hx.fillStyle = '#ffe98a'; hx.fillText(text, cx, y + 26);
+}
+// Opción de lista: misma tipografía, barra negra, triángulo y color que las del Main Menu. Devuelve su rectángulo accionable.
+function mmItem(text, x, cy, sel) {
+  hx.font = '400 25px ' + F1; hx.textAlign = 'left'; hx.textBaseline = 'middle';
+  const tw = hx.measureText(text).width;
+  if (sel) {
+    hx.fillStyle = '#000'; hx.fillRect(x - 38, cy - 15, tw + 50, 30);
+    hx.fillStyle = '#c99a12'; hx.beginPath(); hx.moveTo(x - 28, cy - 8); hx.lineTo(x - 12, cy); hx.lineTo(x - 28, cy + 8); hx.closePath(); hx.fill();
+  }
+  hx.fillStyle = sel ? '#ffd21a' : '#0a0a0a'; hx.fillText(text, x, cy + 1);
+  return { x: x - 38, y: cy - 15, w: tw + 50, h: 30 };
+}
+function mmDescBox(text) {
+  const dg = hx.createLinearGradient(0, 380, 0, 432); dg.addColorStop(0, '#5a5a60'); dg.addColorStop(1, '#1e1e22');
+  hx.fillStyle = '#fff'; hx.fillRect(86, 378, 628, 56); hx.fillStyle = dg; hx.fillRect(89, 381, 622, 50);
+  hx.font = '400 17px "Arial Narrow", Arial, sans-serif'; hx.textAlign = 'left'; hx.textBaseline = 'middle'; hx.fillStyle = '#fff';
+  hx.fillText(text, 111, 406, 590);
+}
+// Campo de texto: cuadro oscuro con borde blanco (amarillo si está activo), igual que el cuadro de descripción.
+function mmField(x, y, w, h, value, placeholder, active, upper) {
+  const g = hx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#5a5a60'); g.addColorStop(1, '#1e1e22');
+  hx.fillStyle = active ? '#ffd21a' : '#fff'; hx.fillRect(x, y, w, h); hx.fillStyle = g; hx.fillRect(x + 3, y + 3, w - 6, h - 6);
+  hx.font = '400 21px ' + F1; hx.textAlign = 'left'; hx.textBaseline = 'middle';
+  const v = upper ? String(value).toUpperCase() : String(value);
+  if (v) { hx.fillStyle = '#fff'; hx.fillText(v, x + 11, y + h / 2 + 1, w - 22); } else { hx.fillStyle = 'rgba(255,255,255,.5)'; hx.fillText(placeholder, x + 11, y + h / 2 + 1, w - 22); }
+  if (active && Math.floor(S.t * 2.2) % 2 === 0) { const tw = Math.min(w - 22, hx.measureText(v).width); hx.fillStyle = '#ffd21a'; hx.fillRect(x + 12 + tw, y + 7, 2, h - 14); }
+}
+const inRect = (r, x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+const frameXY = e => { const r = $('frame').getBoundingClientRect(); return [(e.clientX - r.left) / r.width * HW, (e.clientY - r.top) / r.height * HH]; };
+
+/* ---- Pausa ---- */
+const PM_ITEMS = ['ABANDONAR', 'SEGUIR'];   // ABANDONAR a la izquierda, SEGUIR a la derecha
+function pmDraw(m) {
+  m.t += 1 / 60;
+  hx.fillStyle = 'rgba(0,0,0,.5)'; hx.fillRect(0, 0, HW, HH);
+  const x = 170, y = 118, w = 460, h = 214;
+  hx.fillStyle = '#000'; hx.fillRect(x - 6, y - 6, w + 12, h + 12); hx.fillStyle = '#fff'; hx.fillRect(x - 3, y - 3, w + 6, h + 6);
+  mmBackdrop(x, y, w, h, m.t);
+  buildTitleFx();
+  if (TFX) { hx.drawImage(TFX.bg, 0, 0, HW, 40, x, y, w, 24); hx.drawImage(TFX.bg, 0, 406, HW, 44, x, y + h - 24, w, 24); }
+  else { hx.fillStyle = '#1b1b1f'; hx.fillRect(x, y, w, 24); hx.fillRect(x, y + h - 24, w, 24); }
+  mmPill('Pausa', 400, y + 30, 200);
+  m.hit = [];
+  const xs = [232, 448];
+  PM_ITEMS.forEach((n, i) => { m.hit.push(mmItem(n, xs[i], y + 140, m.sel === i)); });
+}
+function pmMove(d) { const m = S.pm; if (!m) return; const n = clamp(m.sel + d, 0, 1); if (n !== m.sel) { m.sel = n; beep(880, 0.04, 'square', 0.05); } }
+function pmActivate() { const m = S.pm; if (!m) return; if (m.sel === 0) { S.pm = null; S.paused = false; showMenu(); } else setPause(false); }
+function pmProbe(e, act) {
+  const m = S.pm, [x, y] = frameXY(e); let over = -1;
+  (m.hit || []).forEach((r, i) => { if (inRect(r, x, y)) over = i; });
+  if (over >= 0 && act) { m.sel = over; }
+  return over;
+}
+
+/* ---- Entrada de Multiplayer (nombre / crear sala / código / unirme / volver) ---- */
+function meOpen() { S.me = { sel: 0, hit: [] }; }
+function meFocus(i) {
+  const m = S.me; if (!m) return; m.sel = i;
+  const el = i === 0 ? $('mpName') : i === 2 ? $('mpCode') : null;
+  try { if (el) el.focus({ preventScroll: true }); else if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (er) { }
+}
+function meMove(d) { const m = S.me; if (!m) return; const n = (m.sel + d + 5) % 5; if (n !== m.sel) beep(880, 0.04, 'square', 0.05); meFocus(n); }
+function meActivate() {
+  const m = S.me; if (!m) return;
+  if (m.sel === 0 || m.sel === 2) meFocus(m.sel); else if (m.sel === 1) mpEnter(null); else if (m.sel === 3) mpEnter($('mpCode').value); else mpEntryClose();
+}
+function meDraw(m) {
+  const t = S.t;
+  hx.fillStyle = '#000'; hx.fillRect(0, 0, HW, HH);
+  mmBackdrop(0, 40, HW, 366, t);
+  mmBand(0, 40); mmBand(406, HH);
+  mmPill('Multiplayer', 400, 31, 300);
+  m.hit = [];
+  const lab = (txt, x, y, al) => { hx.font = '400 20px ' + F1; hx.textAlign = al; hx.textBaseline = 'middle'; hx.fillStyle = '#0a0a0a'; hx.fillText(txt, x, y); };
+  // nombre
+  lab('NOMBRE', 292, 128, 'right');
+  mmField(304, 111, 220, 34, $('mpName').value, 'Tu nombre', m.sel === 0, false); m.hit.push({ k: 0, x: 304, y: 111, w: 220, h: 34, text: true });
+  // crear sala
+  hx.font = '400 25px ' + F1; const cw = hx.measureText('CREAR SALA').width;
+  m.hit.push(Object.assign(mmItem('CREAR SALA', 400 - cw / 2, 190, m.sel === 1), { k: 1 }));
+  lab('O UNITE CON EL CÓDIGO DE OTRA SALA', 400, 232, 'center');
+  // código + unirme
+  mmField(250, 254, 150, 34, $('mpCode').value, 'CÓDIGO', m.sel === 2, true); m.hit.push({ k: 2, x: 250, y: 254, w: 150, h: 34, text: true });
+  m.hit.push(Object.assign(mmItem('UNIRME', 462, 271, m.sel === 3), { k: 3 }));
+  hx.font = '400 25px ' + F1; const vw = hx.measureText('VOLVER').width;
+  m.hit.push(Object.assign(mmItem('VOLVER', 400 - vw / 2, 332, m.sel === 4), { k: 4 }));
+  const st = $('mpStatus') ? $('mpStatus').textContent : '';
+  mmDescBox(st || ['Escribí tu nombre de piloto.', 'Creá una sala y pasale el código a tus amigos.', 'Escribí el código de la sala a la que querés entrar.', 'Unite a la sala con ese código.', 'Volver al menú principal.'][m.sel]);
+}
+function meProbe(e, act) {
+  const m = S.me, [x, y] = frameXY(e); let over = null;
+  (m.hit || []).forEach(r => { if (inRect(r, x, y)) over = r; });
+  // Pasar sobre un botón lo selecciona (y suelta el foco del teclado); los campos de texto solo cambian el cursor, se activan con un clic.
+  if (over && act && !over.text && m.sel !== over.k) { beep(880, 0.04, 'square', 0.05); meFocus(over.k); }
+  return over;
+}
 function mmDraw(m) {
   const t = m.t, eo = x => 1 - Math.pow(1 - clamp(x, 0, 1), 3);
   hx.fillStyle = '#000'; hx.fillRect(0, 0, HW, HH);
@@ -2493,10 +2637,10 @@ const mpGenCode = () => { let s = ''; for (let i = 0; i < 5; i++) s += MP_CODE_C
 function mpSaved() { try { return localStorage.getItem('cabName') || ''; } catch (e) { return ''; } }
 function mpStatus(txt) { const e = $('mpStatus'); if (e) e.textContent = txt || ''; }
 function mpEntryOpen() {
-  S.mpe = true; $('mpBox').hidden = false; $('mpName').value = mpSaved(); mpStatus('');
-  try { $('mpName').focus(); } catch (e) { }
+  S.mpe = true; meOpen(); $('mpBox').hidden = false; $('mpName').value = mpSaved(); mpStatus('');
+  meFocus(0);
 }
-function mpEntryClose() { S.mpe = false; $('mpBox').hidden = true; try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch (e) { } }
+function mpEntryClose() { S.mpe = false; S.me = null; $('mpBox').hidden = true; try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch (e) { } }
 function mpPeers() { return NET.r ? NET.r.peers() : []; }
 function mpMyPeer() { if (!NET.peerId) { const m = mpPeers().find(p => p.sameTab); if (m) NET.peerId = m.peer; } return NET.peerId; }
 function mpPlayers() {
@@ -2635,12 +2779,14 @@ function startRaceMP(ord) {
   if (document.body) document.body.dataset.menu = '';
   S.view = 2; applyView();
   resetPlayer(); makeCars(); finCount = 0; raceT = 0; msgs = []; demoCar = null;
-  const back = PACE * CD_TOTAL, g = mpGrid(myK);
+  // Con CPU activados, ellos largan ADELANTE (primeras filas de la grilla) y los jugadores detrás: si no, los humanos los atropellan en la salida.
+  const cpuN = (NET.state && NET.state.cpu) ? Math.max(0, 20 - ord.length) : 0;
+  const back = PACE * CD_TOTAL, g = mpGrid(myK + cpuN);
   P.d = g.d; S.myLane = g.d; P.v = PACE; P.dist = g.dist - back; P.gear = 1; P.steer = 0; P.psi = 0; P.phi = 0; P.inv = CD_TOTAL + 0.5;
   cars.forEach(c => { c.unused = true; c.remote = null; c.cpu = false; c.run = false; c.v = 0; c.fin = 0; });
   let ci = 0;
   ord.forEach((pe, k) => {
-    if (pe === me) return; const c = cars[ci++]; if (!c) return; const gg = mpGrid(k);
+    if (pe === me) return; const c = cars[ci++]; if (!c) return; const gg = mpGrid(k + cpuN);
     c.unused = false; c.remote = pe; c.run = true; c.v = PACE; c.d = gg.d; c.lane = gg.d; c.dist = gg.dist - back; c.psi = 0; c.phi = 0; c.snap = null; c.hadSnap = false; c.lv = 0;
     c.pname = (info[pe] && info[pe].n) || 'Piloto';
     c.seat = mpSeat(pe); c.color = MP_CARS[c.seat - 1].top;
@@ -2651,7 +2797,7 @@ function startRaceMP(ord) {
     const amount = 20 - ord.length;
     for (let k = 0; k < amount; k++) {
       const c = cars[ci + k]; if (!c) break;
-      const gg = mpGrid(ord.length + k);
+      const gg = mpGrid(k);   // los CPU ocupan las primeras filas
       c.unused = false; c.cpu = true; c.cpuId = k; c.remote = null;
       c.gridDist = gg.dist; c.dist = gg.dist - back;
       c.d = gg.d; c.lane = gg.d; c.v = PACE;
@@ -2664,7 +2810,7 @@ function startRaceMP(ord) {
   }
   S.camS = P.dist + 14 + PACE * CD_A;
   S.te = null; S.mode = 'countdown'; S.cd = Math.max(0, (NET.state ? NET.state.raceAt - mpNow() : CD_TOTAL)); S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.introT = 0; $('touch').dataset.trans = S.trans;
-  $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true;
+  $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true; S.pm = null;
   mpPub({ p: null });
 }
 function mpBackToLobby() {
@@ -2746,6 +2892,11 @@ function drawLobby() {
   hx.fillStyle = '#000'; rr(612, 28, 118, 42, 5); hx.fill(); hx.strokeStyle = '#8c8f98'; hx.lineWidth = 2; rr(612, 28, 118, 42, 5); hx.stroke();
   hx.font = '700 11px "Barlow Condensed", Arial, sans-serif'; hx.fillStyle = '#9fb8e6'; hx.textAlign = 'center'; hx.fillText('ROOM CODE', 671, 38);
   hx.font = '400 25px ' + F1; hx.fillStyle = '#ffd21a'; hx.textBaseline = 'alphabetic'; hx.fillText(NET.code.toUpperCase(), 671, 64);
+  { const cp = L0.copyT > 0, ov = L0.sel === 'copy';
+    hx.fillStyle = '#000'; rr(548, 28, 58, 42, 5); hx.fill(); hx.strokeStyle = cp ? '#27e255' : (ov ? '#ffd21a' : '#8c8f98'); hx.lineWidth = 2; rr(548, 28, 58, 42, 5); hx.stroke();
+    hx.font = '700 13px "Barlow Condensed", Arial, sans-serif'; hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.fillStyle = cp ? '#27e255' : '#9fb8e6';
+    hx.fillText(cp ? 'COPIADO' : 'COPIAR', 577, 49); hx.textBaseline = 'alphabetic';
+    L0.hit.push({ k: 'copy', x: 548, y: 28, w: 58, h: 42 }); }
   // lista de jugadores
   hx.fillStyle = '#4d5167'; rr(72, 66, 448, 266, 4); hx.fill();
   for (let i = 0; i < MP_MAX; i++) {
@@ -2805,11 +2956,18 @@ function lbPointer(e) {
   const L0 = S.lb; if (!L0) return;
   const r = $('frame').getBoundingClientRect(), x = (e.clientX - r.left) / r.width * HW, y = (e.clientY - r.top) / r.height * HH;
   for (const h of L0.hit) if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
-    if (h.k === 'trans') mpToggleTrans(); else if (h.k === 'course') mpCourse(1); else if (h.k === 'cpu') mpToggleCPU(); else if (h.k === 'ready') mpToggleReady(); else if (h.k === 'start') mpStart(); else if (h.k === 'exit') mpLeave();
+    if (h.k === 'copy') mpCopyCode(); else if (h.k === 'trans') mpToggleTrans(); else if (h.k === 'course') mpCourse(1); else if (h.k === 'cpu') mpToggleCPU(); else if (h.k === 'ready') mpToggleReady(); else if (h.k === 'start') mpStart(); else if (h.k === 'exit') mpLeave();
     return;
   }
 }
-function lbUpdate(dt) { const L0 = S.lb; if (!L0) return; L0.t += dt; if (L0.msgT > 0) L0.msgT -= dt; }
+function mpCopyCode() {
+  const code = String(NET.code || '').toUpperCase(), L0 = S.lb; if (!code) return;
+  const done = () => { if (L0) L0.copyT = 1.6; beep(880, 0.04, 'square', 0.05); };
+  try { if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(code).then(done, () => { fb(); }); return; } } catch (e) { }
+  fb();
+  function fb() { try { const ta = document.createElement('textarea'); ta.value = code; ta.style.cssText = 'position:fixed;left:-999px;top:0;opacity:0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); done(); } catch (e) { } }
+}
+function lbUpdate(dt) { const L0 = S.lb; if (!L0) return; L0.t += dt; if (L0.copyT > 0) L0.copyT -= dt; if (L0.msgT > 0) L0.msgT -= dt; }
 function csOpen() { S.cs = { t: 0, sel: 0, left: CS_TIME, state: 'in', chT: 0, tickN: CS_TIME, shake: 0 }; beep(660, 0.08, 'square', 0.05); setTimeout(() => beep(990, 0.1, 'square', 0.05), 90); }
 function csMove(d) {
   const c = S.cs; if (!c || c.state === 'chosen') return;
@@ -3297,30 +3455,24 @@ function drawGentlemen(g) {
 }
 
 /* TIME EXTENSION!! (al completar una vuelta): "BEST LAP" si fue la mejor, "TIME LAP" si no; titila al aparecer */
-const TE_DUR = 3.6;
+const TE_DUR = 1.6;   // corto
 function drawTimeExt(e) {
+  // Mismo lenguaje visual que RESULTS (itálica con degradé naranja), más chico, y titila como en Daytona USA.
   const t = e.t;
-  if (t < 1.4 && Math.floor(t * 9) % 2) return;                         // titila unos instantes
-  const a = t > TE_DUR - 0.4 ? clamp((TE_DUR - t) / 0.4, 0, 1) : 1, k = clamp(t / 0.12, 0, 1);
-  hx.save(); hx.globalAlpha = a; hx.translate(HW / 2, 0);
-  // cinta azul rayada con borde
-  const bx = -178, by = 250, bw = 356, bh = 34;
-  hx.fillStyle = '#0a1c5c'; rr(bx, by, bw, bh, 5); hx.fill();
-  hx.save(); rr(bx, by, bw, bh, 5); hx.clip(); hx.fillStyle = 'rgba(70,120,255,.35)';
-  for (let x = bx - bh; x < bx + bw; x += 14) { hx.beginPath(); hx.moveTo(x, by + bh); hx.lineTo(x + 7, by + bh); hx.lineTo(x + 7 + bh, by); hx.lineTo(x + bh, by); hx.closePath(); hx.fill(); }
-  hx.restore();
-  hx.strokeStyle = '#f7c519'; hx.lineWidth = 2.5; rr(bx, by, bw, bh, 5); hx.stroke();
-  itext('TIME  EXTENSION!!', 0, by + 27, 27, '#fff6b0', 'center', '#0a1c5c', 5);
-  // subtítulo chico en rojo y el tiempo debajo
-  const sub = e.best ? 'BEST LAP' : 'TIME LAP';
-  itext(sub, 0, by + (e.best ? 58 : 54), e.best ? 27 : 18, '#ff3a2a', 'center', e.best ? '#fff1c0' : '#3a0606', e.best ? 5 : 4);
-  itext(lapStr(e.lt), 0, by + 100, 46, '#fff1c0', 'center', '#5a2a00', 6);
+  if (t > 0.12 && t < TE_DUR - 0.12 && Math.floor(t * 9) % 2) return;   // parpadeo ~4,5 Hz; entra y sale fijo
+  const a = t > TE_DUR - 0.12 ? clamp((TE_DUR - t) / 0.12, 0, 1) : 1;
+  hx.save(); hx.globalAlpha = a; hx.translate(HW / 2, 232);
+  gradText('TIME EXTENSION!!', 0, 0, 28, ['#ff7a00', '#ffb31b', '#fff2a3', '#ffb31b', '#ff860f'], '#562100', 5, 1.5, true);
+  const lab = e.best ? 'BEST LAP' : 'TIME LAP';
+  gradText(lab, 0, 25, e.best ? 19 : 15, e.best ? ['#ff9a2a', '#ff3b12'] : ['#ff5a3a', '#e00f10'], '#380500', 4, 1, false);
+  gradText(lapStr(e.lt), 0, 60, 30, ['#ffffff', '#f4ecc8', '#ffc83a'], '#3c1d00', 5, 2, false);
   hx.restore();
 }
 function drawHUD() {
   hx.clearRect(0, 0, HW, HH);
   if (S.mode === 'menu') {
     if (S.lb) { drawLobby(); return; }
+    if (S.mpe && S.me) { meDraw(S.me); return; }
     if (S.mm) { mmDraw(S.mm); return; }
     if (S.cs) { drawCircuitSelect(S.cs); return; }
     if (S.gs) { drawGentlemen(S.gs); return; }
@@ -3373,7 +3525,7 @@ function drawHUD() {
   // En FREE no hay contador arriba: aprovechar ese espacio para el velocímetro.
   drawTach(HW / 2, S.freeRun ? 155 : 198, 113);
   text('POSITION', HW - 16, 20, 17, '#ffffff', 'right', F2, 4);
-  itext((S.mode === 'finish' || S.mode === 'ended' ? P.place : rank) + '/' + mpTotal(), HW - 14, 70, 52, '#27e255', 'right', '#0a2a12', 6);
+  itext((S.mode === 'finish' || S.mode === 'ended' ? P.place : rank) + (S.mp ? '' : '/' + mpTotal()), HW - 14, 70, 52, '#27e255', 'right', '#0a2a12', 6);
   drawRadar();
   drawMini();
   let y = 272;
@@ -3410,7 +3562,7 @@ const END_RES0 = 0, END_GO0 = 4.0, END_TOTAL = 12.0, GOAL_END = 0;   // VIDEO: R
 const TO_OFF = 0;
 // Solo Arcade/FREE: tiempos del index (4).html. Online conserva los suyos.
 const SOLO_END_RES0 = 8.0, SOLO_END_RES1 = 11.6;
-const SOLO_END_GO0 = 11.9, SOLO_END_TOTAL = 16.8, SOLO_GOAL_END = 7.6;
+const SOLO_END_GO0 = 9.0, SOLO_END_TOTAL = 16.8, SOLO_GOAL_END = 7.6;
 const SOLO_TO_OFF = SOLO_END_RES0 - 0.3;
 function soloDrawGoal(t) {
   const k = clamp(t / 0.4, 0, 1), sc = 1 + (1 - k) * 2.2 + Math.sin(t * 7) * 0.02;
@@ -3561,14 +3713,12 @@ function soloDrawGameOver(t, alpha) {
 }
 function drawEnding(te) {
   if (!S.mp) {
-    // Final de Arcade / FREE trasladado del index de referencia (sin cinematicas por puesto).
-    const teSolo = te;
+    // Arcade / FREE: GOAL + vuelta de cámara; después se congela todo y aparece el mismo panel RESULTS que en multiplayer
+    // (posición, total time y best lap) y GAME OVER se anima encima.
     const place = S.mode === 'timeout' ? S.resultPlace : P.place;
-    const fadeOut = teSolo > SOLO_END_TOTAL - 0.5 ? clamp((SOLO_END_TOTAL - teSolo) / 0.5, 0, 1) : 1;
-    if (teSolo >= SOLO_END_RES0 && teSolo < SOLO_END_RES1) {
-      const k = clamp((teSolo - SOLO_END_RES0) / 0.35, 0, 1);
-      soloDrawResults(place, k * (teSolo > SOLO_END_RES1 - 0.4 ? clamp((SOLO_END_RES1 - teSolo) / 0.4, 0, 1) : 1), 1 + (1 - k) * 0.5);
-    } else if (teSolo >= SOLO_END_GO0) soloDrawGameOver(teSolo - SOLO_END_GO0, fadeOut);
+    const fadeOut = te > SOLO_END_TOTAL - 0.5 ? clamp((SOLO_END_TOTAL - te) / 0.5, 0, 1) : 1;
+    if (te >= SOLO_END_RES0) { const k = clamp((te - SOLO_END_RES0) / 0.35, 0, 1); drawResults(place, k * fadeOut, 1 + (1 - k) * 0.5); }
+    if (te >= SOLO_END_GO0) drawGameOver(te - SOLO_END_GO0, fadeOut);
     return;
   }
 
@@ -3632,7 +3782,7 @@ function render(dt) {
   remoteMeshes.forEach(m => { m.group.visible = false; });
   cars.forEach((c, i) => {
     const m = carMeshes[i], remote = S.mp && c.remote ? remoteMeshes[i] : null;
-    const v = S.mode !== 'finish' && !c.unused && (!S.mp || !!c.remote || !!c.cpu) && vis(c);   // en la cinemática final no se ve ningún rival: podrían tapar la toma
+    const v = (S.mode !== 'finish' || !S.mp) && !c.unused && (!S.mp || !!c.remote || !!c.cpu) && vis(c);   // en la cinemática final no se ve ningún rival: podrían tapar la toma
     m.group.visible = v && !remote;
     if (remote) remote.group.visible = v;
     if (v && S.mode !== 'timeout') placeCar(remote || m, c, dt, false);
@@ -3658,6 +3808,7 @@ function render(dt) {
   if (S.mode === 'menu' && (S.lb || S.mm || S.cs || S.ms || S.gs)) R3.renderer.clear();   // durante las pantallas de selección no se ve la demo por detrás
   else R3.renderer.render(R3.scene, R3.camera);
   drawHUD();
+  if (S.pm) pmDraw(S.pm);
   if (S.mode === 'menu' && S.ms && R3.sel && !window.__no3d) { try { renderSelectCars(); } catch (e) { if (!renderSelectCars.err) { renderSelectCars.err = true; console.error(e); } } }
   audioTick(S.mode === 'race' || S.mode === 'countdown');
 }
@@ -3754,7 +3905,7 @@ function showMenu(keepSel) {
   }
   menuSetup();
   demoCar = P;
-  $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true;
+  $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true; S.pm = null;
   if (!keepSel) { selMusicStop(); musicStart(); }
   if (mpBack) mpBackToLobby();
 }
@@ -3779,7 +3930,7 @@ function startRace() {
   cars.forEach(c => { c.v=PACE; c.run=true; c.dist -= back; });
   S.camS = P.dist + 14 + PACE * CD_A;
   S.te = null; S.mode = 'countdown'; S.cd = CD_TOTAL; S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.introT = 0; $('touch').dataset.trans = S.trans;
-  $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true;
+  $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true; S.pm = null;
 }
 function showEnd() {
   const ok = P.finished, total = mpTotal();
@@ -3797,8 +3948,10 @@ function showEnd() {
 }
 function setPause(p) {
   if (!(S.mode === 'race' || S.mode === 'countdown')) return;
-  if (S.mp) { $('pauseBox').hidden = !p; return; }   // en multijugador el mundo no se detiene
-  S.paused = p; $('pauseBox').hidden = !p;
+  $('frame').style.cursor = '';
+  if (p) { if (!S.pm) S.pm = { t: 0, sel: 1, hit: [] }; } else S.pm = null;
+  if (S.mp) return;   // en multijugador el mundo no se detiene
+  S.paused = p;
   if (p && A.c) { try { A.eg.gain.value = 0; A.ng.gain.value = 0; A.ig.gain.value = 0; } catch (e) { } }
 }
 function shift(dirn) {
@@ -3822,7 +3975,13 @@ window.addEventListener('keydown', e => {
     else if (e.code === 'ArrowRight' || e.code === 'ArrowDown' || e.code === 'KeyD' || e.code === 'KeyS' || e.code === 'KeyC') mpCourse(1);
     e.preventDefault(); return;
   }
-  if (S.mode === 'menu' && S.mm && S.mpe) { if (e.code === 'Escape') mpEntryClose(); return; }
+  if (S.mode === 'menu' && S.mm && S.mpe) {
+    if (e.code === 'Escape') mpEntryClose();
+    else if (e.code === 'ArrowUp' || (e.code === 'Tab' && e.shiftKey)) { meMove(-1); e.preventDefault(); }
+    else if (e.code === 'ArrowDown' || e.code === 'Tab') { meMove(1); e.preventDefault(); }
+    else if (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') { if (!e.repeat) meActivate(); e.preventDefault(); }
+    return;
+  }
   if (S.mode === 'menu' && !S.sel && !e.repeat && (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space')) { e.preventDefault(); openSelect(); return; }
   if (S.mode === 'menu' && S.mm) {
     if (e.code === 'Escape') { closeSelect(); return; }
@@ -3850,6 +4009,11 @@ window.addEventListener('keydown', e => {
     return;
   }
   if (S.mode === 'menu' && S.sel && e.code === 'Escape') { closeSelect(); return; }
+  if (S.pm) {
+    // Pausa: igual que el Main Menu, flechas para elegir y Enter para accionar (en multijugador la carrera sigue: las flechas siguen conduciendo).
+    if (!S.mp && /^(ArrowLeft|ArrowRight|ArrowUp|ArrowDown|KeyA|KeyD)$/.test(e.code)) { if (!e.repeat) pmMove(/Left|Up|KeyA/.test(e.code) ? -1 : 1); e.preventDefault(); return; }
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') { if (!e.repeat) pmActivate(); e.preventDefault(); return; }
+  }
   const k = KEYMAP[e.code];
   if (k) { keys[k] = true; e.preventDefault(); return; }
   if (e.repeat) return;
@@ -3857,7 +4021,7 @@ window.addEventListener('keydown', e => {
   else if (e.code === 'KeyZ' || e.code === 'KeyQ') shift(-1);
   else if (e.code === 'KeyV') { S.view = (S.view + 1) % VIEWS.length; applyView(); }
   else if (/^Digit[1-4]$/.test(e.code)) { S.view = +e.code.slice(5) - 1; applyView(); }
-  else if (e.code === 'KeyP' || e.code === 'Escape') setPause(S.mp ? $('pauseBox').hidden : !S.paused);
+  else if (e.code === 'KeyP' || e.code === 'Escape') setPause(!S.pm);
   else if (e.code === 'Enter' && S.mode === 'menu') startRace();
   else if (e.code === 'Enter' && S.mode === 'ended') showMenu();
 });
@@ -3875,13 +4039,38 @@ document.querySelectorAll('.tbtn[data-k]').forEach(b => {
 });
 $('tUp').addEventListener('click', () => shift(1));
 $('tDown').addEventListener('click', () => shift(-1));
-$('frame').addEventListener('pointerdown', e => { if (S.mode !== 'menu') return; if (S.mpe) return; if (!S.sel) openSelect(); else if (S.lb) lbPointer(e); else if (S.mm) mmPointer(e); else if (S.cs) csPointer(e); else if (S.ms) msPointer(e); });
+// Hover y cursor iguales en todos los menús: lo que se puede accionar muestra la mano y (en las listas) toma la selección; el resto no cambia nada.
+function menuHover(e) {
+  const fr = $('frame');
+  if (S.pm) { const o = pmProbe(e, true); fr.style.cursor = o >= 0 ? 'pointer' : 'default'; return; }
+  if (S.mode === 'menu' && S.mpe && S.me) { const o = meProbe(e, true); fr.style.cursor = o ? (o.text ? 'text' : 'pointer') : 'default'; return; }
+  if (S.mode !== 'menu' || S.mpe || !S.sel) { fr.style.cursor = ''; return; }
+  const [x, y] = frameXY(e);
+  let over = false;
+  const pick = (o, i) => { if (o.sel !== i) { o.sel = i; beep(880, 0.04, 'square', 0.05); } };
+  if (S.lb) { for (const h of S.lb.hit) if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) over = true; }
+  else if (S.mm && S.mm.state !== 'chosen') {
+    for (let i = 0; i < MM_ITEMS.length; i++) if (x >= MM_X - 40 && x <= MM_X + 230 && Math.abs(y - (MM_Y0 + i * MM_DY)) <= MM_DY / 2) { over = true; pick(S.mm, i); }
+  } else if (S.cs && S.cs.state !== 'chosen') {
+    for (let i = 0; i < 3; i++) if (x >= CS_X[i] && x <= CS_X[i] + CS_W && y >= CS_BY - 8 && y <= CS_MY + CS_MH) { over = true; pick(S.cs, i); }
+    if (y > 355 && x > 500) over = true;
+  } else if (S.ms && S.ms.state !== 'chosen' && y >= 100 && y <= 440) {
+    over = true; if (!S.ms.free) pick(S.ms, x < HW / 2 ? 0 : 1);
+  }
+  fr.style.cursor = over ? 'pointer' : 'default';
+}
+$('frame').addEventListener('pointermove', menuHover);
+$('frame').addEventListener('click', e => { if (S.mode === 'menu' && S.mpe && S.me) { const o = meProbe(e, false); if (o && o.text) meFocus(o.k); } });   // el foco se da después del mousedown, que de otro modo lo quita
+$('frame').addEventListener('pointerdown', e => {
+  if (S.pm) { const o = pmProbe(e, true); if (o >= 0) pmActivate(); return; }
+  if (S.mode === 'menu' && S.mpe && S.me) { const o = meProbe(e, true); if (o && !o.text) meActivate(); return; }
+  if (S.mode !== 'menu') return; if (S.mpe) return; if (!S.sel) openSelect(); else if (S.lb) lbPointer(e); else if (S.mm) mmPointer(e); else if (S.cs) csPointer(e); else if (S.ms) msPointer(e); });
 $('againBtn').addEventListener('click', showMenu);
 $('mpCreate').addEventListener('click', () => mpEnter(null));
 $('mpJoin').addEventListener('click', () => mpEnter($('mpCode').value));
 $('mpBack').addEventListener('click', mpEntryClose);
-$('mpName').addEventListener('keydown', e => { if (e.key === 'Enter') mpEnter(null); });
-$('mpCode').addEventListener('keydown', e => { if (e.key === 'Enter') mpEnter($('mpCode').value); });
+$('mpName').addEventListener('keydown', e => { if (e.key === 'Enter') mpEnter(null); else if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) { e.preventDefault(); meMove(1); } else if (e.key === 'ArrowUp' || e.key === 'Tab') { e.preventDefault(); meMove(-1); } });
+$('mpCode').addEventListener('keydown', e => { if (e.key === 'Enter') mpEnter($('mpCode').value); else if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) { e.preventDefault(); meMove(1); } else if (e.key === 'ArrowUp' || e.key === 'Tab') { e.preventDefault(); meMove(-1); } });
 $('resumeBtn').addEventListener('click', () => setPause(false));
 $('quitBtn').addEventListener('click', () => { S.paused = false; showMenu(); });
 $('muteBtn').addEventListener('click', () => setMuted(!S.muted));
