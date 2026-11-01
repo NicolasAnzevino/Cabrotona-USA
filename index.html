@@ -986,40 +986,40 @@ function mpResOpen() {
   S.mpr = { t: 0, rows: rows.slice(0, 8) };
 }
 function mpResTick(dt) { const m = S.mpr; m.t += dt; if (m.t >= MPR_TIME) { S.mpr = null; showMenu(); } }
+function mpBackdrop(t, y0) {
+  const bg = hx.createLinearGradient(0, 0, 0, HH); bg.addColorStop(0, '#8fcad8'); bg.addColorStop(1, '#58a3b6'); hx.fillStyle = bg; hx.fillRect(0, 0, HW, HH);
+  hx.save(); hx.globalAlpha = 0.13; hx.fillStyle = '#fff'; hx.font = 'italic 900 34px Georgia, serif'; hx.textAlign = 'left'; hx.textBaseline = 'middle';
+  for (let r = 0; r < 6; r++) for (let c = -1; c < 3; c++) hx.fillText('CABROTONA USA', c * 420 + (r % 2) * 190 - ((t * 10) % 420), y0 + r * 80);
+  hx.restore();
+}
 function drawMpResults() {
   const m = S.mpr, t = m.t;
-  const bg = hx.createLinearGradient(0, 0, 0, HH); bg.addColorStop(0, '#9fd6e2'); bg.addColorStop(1, '#6fb8c8'); hx.fillStyle = bg; hx.fillRect(0, 0, HW, HH);
-  hx.save(); hx.globalAlpha = 0.14; hx.fillStyle = '#fff'; hx.font = 'italic 900 40px Georgia, serif'; hx.textAlign = 'left'; hx.textBaseline = 'middle';
-  for (let r = 0; r < 6; r++) for (let c = -1; c < 3; c++) hx.fillText('CABROTONA', c * 330 + (r % 2) * 150 - ((t * 10) % 330), 40 + r * 80);
-  hx.restore();
-  // barra RESULTS
-  hx.fillStyle = '#000'; hx.fillRect(138, 34, 514, 34); hx.fillStyle = '#d4101a'; hx.fillRect(141, 37, 508, 28);
-  hx.fillStyle = '#111'; hx.fillRect(141, 37, 120, 28); hx.fillRect(529, 37, 120, 28);
-  for (const x0 of [212, 528]) for (let i = 0; i < 4; i++) for (let j = 0; j < 3; j++) { hx.fillStyle = (i + j) % 2 ? '#fff' : '#111'; hx.fillRect(x0 + i * 7, 39 + j * 8, 7, 8); }
-  hx.font = 'italic 900 27px Georgia, serif'; hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.lineJoin = 'round';
-  hx.lineWidth = 5; hx.strokeStyle = '#5a0a0f'; hx.strokeText('RESULTS', 395, 52); hx.fillStyle = '#fff'; hx.fillText('RESULTS', 395, 52);
-  // cuenta regresiva
-  const n = String(Math.max(0, Math.ceil(MPR_TIME - t))).padStart(2, '0');
-  hx.fillStyle = '#000'; rr(662, 36, 54, 44, 6); hx.fill(); hx.fillStyle = '#ffe21a'; rr(665, 39, 48, 38, 4); hx.fill();
-  hx.font = '400 32px ' + F1; hx.fillStyle = '#111'; hx.textBaseline = 'middle'; hx.fillText(n, 689, 59);
-  // filas
-  const PL = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'], PC = ['#ffe21a', '#ffffff', '#ff9fc4', '#8aa4ff', '#8aa4ff', '#8aa4ff', '#8aa4ff', '#8aa4ff'];
+  mpBackdrop(t, 30);
+  hx.fillStyle = '#c1161c'; rr(60, 26, 680, 320, 10); hx.fill(); hx.fillStyle = '#23262e'; rr(64, 30, 672, 312, 8); hx.fill();
+  hx.fillStyle = '#12141a'; hx.fillRect(66, 32, 600, 22);
+  hx.strokeStyle = '#2c303a'; hx.lineWidth = 2; hx.beginPath(); for (let x = 70; x < 660; x += 7) { hx.moveTo(x, 54); hx.lineTo(x + 14, 32); } hx.stroke();
+  hx.font = 'italic 900 19px Georgia, serif'; hx.textAlign = 'left'; hx.textBaseline = 'middle'; hx.lineJoin = 'round';
+  hx.lineWidth = 4; hx.strokeStyle = '#3a0508'; hx.strokeText('RESULTS', 72, 44); hx.fillStyle = '#ff2a2a'; hx.fillText('RESULTS', 72, 44);
+  // cuenta regresiva: mismo estilo que en la selección de pista / transmisión
+  const left = Math.ceil(Math.max(0, MPR_TIME - t)), low = left <= 3 && Math.floor(S.t * 4) % 2 === 0;
+  itext(String(left), 704, 62, 44, low ? '#ff4d5a' : '#ffe14a', 'center', '#000', 6);
+  // lista
+  hx.fillStyle = '#4d5167'; rr(72, 66, 656, 266, 4); hx.fill();
   m.rows.forEach((r, i) => {
-    const y = 108 + i * 33, h = 29;
-    hx.fillStyle = '#11151b'; hx.fillRect(146, y - 2, 496, h + 4);
-    hx.fillStyle = i === 0 ? '#000' : '#46586f'; hx.fillRect(148, y, 150, h);
-    hx.fillStyle = i === 0 ? '#000' : '#2c3948'; hx.fillRect(300, y, 340, h);
+    const y = 70 + i * 32, mine = r.me;
+    hx.fillStyle = mine ? '#000' : (i % 2 ? '#6e728b' : '#8b8fa8'); hx.fillRect(76, y, 648, 28);
+    hx.fillStyle = '#bfc3d6'; hx.fillRect(76, y + 28, 648, 4);
     hx.textBaseline = 'middle'; hx.textAlign = 'left';
-    if (r.place) {
-      hx.font = 'italic 700 23px ' + F1; hx.lineWidth = 3; hx.strokeStyle = '#10141a'; const pc = r.place === 1 ? '#ffe21a' : (PC[r.place - 1] || '#8aa4ff');
-      hx.strokeText(ordinal(r.place), 176, y + h / 2 + 1); hx.fillStyle = pc; hx.fillText(ordinal(r.place), 176, y + h / 2 + 1);
-      if (i === 0) { hx.fillStyle = '#ffe21a'; hx.beginPath(); hx.moveTo(154, y + 7); hx.lineTo(168, y + h / 2); hx.lineTo(154, y + h - 7); hx.closePath(); hx.fill(); }
-    }
-    hx.font = 'italic 900 22px ' + F1; hx.lineWidth = 3; hx.strokeStyle = '#10141a'; const sc = MPR_SEAT_COL[(r.seat - 1) % 8];
-    hx.strokeText(r.seat + 'P', 262, y + h / 2 + 1); hx.fillStyle = sc; hx.fillText(r.seat + 'P', 262, y + h / 2 + 1);
-    let nx = 316;
-    if (r.me) { hx.fillStyle = '#ffd21a'; hx.fillRect(nx, y + 7, 30, 15); hx.fillStyle = '#111'; hx.font = '900 12px Arial'; hx.textAlign = 'center'; hx.fillText('YOU', nx + 15, y + 15); hx.textAlign = 'left'; nx += 36; }
-    hx.font = '400 19px ' + F1; hx.fillStyle = i === 0 ? '#ffb347' : '#e8ecf5'; hx.fillText(r.name, nx, y + h / 2 + 1);
+    if (mine) { hx.fillStyle = '#ffd21a'; hx.beginPath(); hx.moveTo(84, y + 7); hx.lineTo(96, y + 14); hx.lineTo(84, y + 21); hx.closePath(); hx.fill(); }
+    if (r.place) { hx.font = '400 17px ' + F1; hx.fillStyle = mine ? '#ffd21a' : '#ffffff'; hx.fillText(ordinal(r.place), 104, y + 15); }
+    const seat = r.seat;
+    hx.fillStyle = MP_CARS[seat - 1].top; hx.fillRect(176, y + 4, 43, 21);
+    hx.strokeStyle = '#111827'; hx.lineWidth = 1; hx.strokeRect(176, y + 4, 43, 21);
+    hx.font = '700 15px ' + F2; hx.textAlign = 'center';
+    hx.fillStyle = seat === 3 || seat === 6 || seat === 7 || seat === 8 ? '#101827' : '#fff';
+    hx.fillText(seat + 'P', 197.5, y + 15);
+    hx.font = '400 17px ' + F1; hx.textAlign = 'left'; hx.fillStyle = mine ? '#ffd21a' : '#ffffff';
+    hx.fillText(String(r.name).slice(0, 16), 240, y + 15, 300);
   });
   hx.textBaseline = 'alphabetic';
 }
@@ -2932,10 +2932,7 @@ const mpTotal = () => S.mp ? (NET.state && NET.state.ord.length || mpPlayers().l
 function drawLobby() {
   const L0 = S.lb, t = L0.t; L0.hit = [];
   const pl = mpPlayers(), hp = pl.find(p => NET.state && p.peer === NET.state.host), hpr = hp ? hp.presence : {}, me = pl.find(p => p.sameTab);
-  const bg = hx.createLinearGradient(0, 0, 0, HH); bg.addColorStop(0, '#8fcad8'); bg.addColorStop(1, '#58a3b6'); hx.fillStyle = bg; hx.fillRect(0, 0, HW, HH);
-  hx.save(); hx.globalAlpha = 0.13; hx.fillStyle = '#fff'; hx.font = 'italic 900 34px Georgia, serif'; hx.textAlign = 'left'; hx.textBaseline = 'middle';
-  for (let r = 0; r < 6; r++) for (let c = -1; c < 3; c++) hx.fillText('CABROTONA', c * 330 + (r % 2) * 150 - ((t * 10) % 330), 30 + r * 80);
-  hx.restore();
+  mpBackdrop(t, 30);
   hx.fillStyle = '#c1161c'; rr(60, 26, 680, 320, 10); hx.fill(); hx.fillStyle = '#23262e'; rr(64, 30, 672, 312, 8); hx.fill();
   hx.fillStyle = '#12141a'; hx.fillRect(66, 32, 540, 22);
   hx.strokeStyle = '#2c303a'; hx.lineWidth = 2; hx.beginPath(); for (let x = 70; x < 600; x += 7) { hx.moveTo(x, 54); hx.lineTo(x + 14, 32); } hx.stroke();
