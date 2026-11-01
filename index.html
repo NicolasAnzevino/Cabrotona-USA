@@ -978,11 +978,56 @@ function beginFinish(place, completed = true) {
     A.ng.gain.setTargetAtTime(0, t, 0.045);
   }
 }
+const MPR_TIME = 6, MPR_SEAT_COL = ['#ff2a2a', '#2a8bff', '#ffe21a', '#27e255', '#ffffff', '#ff8fd0', '#3aa0ff', '#ff8a1a'];
+function mpResOpen() {
+  const st = NET.state || {}, res = st.results || {}, me = mpMyPeer();
+  const rows = mpPlayers().map(p => ({ peer: p.peer, name: String(p.presence.n || 'Piloto'), seat: p.slot || 1, place: res[p.peer] || 0, me: p.peer === me }));
+  rows.sort((a, b) => (a.place || 99) - (b.place || 99) || a.seat - b.seat);
+  S.mpr = { t: 0, rows: rows.slice(0, 8) };
+}
+function mpResTick(dt) { const m = S.mpr; m.t += dt; if (m.t >= MPR_TIME) { S.mpr = null; showMenu(); } }
+function drawMpResults() {
+  const m = S.mpr, t = m.t;
+  const bg = hx.createLinearGradient(0, 0, 0, HH); bg.addColorStop(0, '#9fd6e2'); bg.addColorStop(1, '#6fb8c8'); hx.fillStyle = bg; hx.fillRect(0, 0, HW, HH);
+  hx.save(); hx.globalAlpha = 0.14; hx.fillStyle = '#fff'; hx.font = 'italic 900 40px Georgia, serif'; hx.textAlign = 'left'; hx.textBaseline = 'middle';
+  for (let r = 0; r < 6; r++) for (let c = -1; c < 3; c++) hx.fillText('CABROTONA', c * 330 + (r % 2) * 150 - ((t * 10) % 330), 40 + r * 80);
+  hx.restore();
+  // barra RESULTS
+  hx.fillStyle = '#000'; hx.fillRect(138, 34, 514, 34); hx.fillStyle = '#d4101a'; hx.fillRect(141, 37, 508, 28);
+  hx.fillStyle = '#111'; hx.fillRect(141, 37, 120, 28); hx.fillRect(529, 37, 120, 28);
+  for (const x0 of [212, 528]) for (let i = 0; i < 4; i++) for (let j = 0; j < 3; j++) { hx.fillStyle = (i + j) % 2 ? '#fff' : '#111'; hx.fillRect(x0 + i * 7, 39 + j * 8, 7, 8); }
+  hx.font = 'italic 900 27px Georgia, serif'; hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.lineJoin = 'round';
+  hx.lineWidth = 5; hx.strokeStyle = '#5a0a0f'; hx.strokeText('RESULTS', 395, 52); hx.fillStyle = '#fff'; hx.fillText('RESULTS', 395, 52);
+  // cuenta regresiva
+  const n = String(Math.max(0, Math.ceil(MPR_TIME - t))).padStart(2, '0');
+  hx.fillStyle = '#000'; rr(662, 36, 54, 44, 6); hx.fill(); hx.fillStyle = '#ffe21a'; rr(665, 39, 48, 38, 4); hx.fill();
+  hx.font = '400 32px ' + F1; hx.fillStyle = '#111'; hx.textBaseline = 'middle'; hx.fillText(n, 689, 59);
+  // filas
+  const PL = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'], PC = ['#ffe21a', '#ffffff', '#ff9fc4', '#8aa4ff', '#8aa4ff', '#8aa4ff', '#8aa4ff', '#8aa4ff'];
+  m.rows.forEach((r, i) => {
+    const y = 108 + i * 33, h = 29;
+    hx.fillStyle = '#11151b'; hx.fillRect(146, y - 2, 496, h + 4);
+    hx.fillStyle = i === 0 ? '#000' : '#46586f'; hx.fillRect(148, y, 150, h);
+    hx.fillStyle = i === 0 ? '#000' : '#2c3948'; hx.fillRect(300, y, 340, h);
+    hx.textBaseline = 'middle'; hx.textAlign = 'left';
+    if (r.place) {
+      hx.font = 'italic 700 23px ' + F1; hx.lineWidth = 3; hx.strokeStyle = '#10141a'; const pc = r.place === 1 ? '#ffe21a' : (PC[r.place - 1] || '#8aa4ff');
+      hx.strokeText(ordinal(r.place), 176, y + h / 2 + 1); hx.fillStyle = pc; hx.fillText(ordinal(r.place), 176, y + h / 2 + 1);
+      if (i === 0) { hx.fillStyle = '#ffe21a'; hx.beginPath(); hx.moveTo(154, y + 7); hx.lineTo(168, y + h / 2); hx.lineTo(154, y + h - 7); hx.closePath(); hx.fill(); }
+    }
+    hx.font = 'italic 900 22px ' + F1; hx.lineWidth = 3; hx.strokeStyle = '#10141a'; const sc = MPR_SEAT_COL[(r.seat - 1) % 8];
+    hx.strokeText(r.seat + 'P', 262, y + h / 2 + 1); hx.fillStyle = sc; hx.fillText(r.seat + 'P', 262, y + h / 2 + 1);
+    let nx = 316;
+    if (r.me) { hx.fillStyle = '#ffd21a'; hx.fillRect(nx, y + 7, 30, 15); hx.fillStyle = '#111'; hx.font = '900 12px Arial'; hx.textAlign = 'center'; hx.fillText('YOU', nx + 15, y + 15); hx.textAlign = 'left'; nx += 36; }
+    hx.font = '400 19px ' + F1; hx.fillStyle = i === 0 ? '#ffb347' : '#e8ecf5'; hx.fillText(r.name, nx, y + h / 2 + 1);
+  });
+  hx.textBaseline = 'alphabetic';
+}
 function endingTick(dt) {
   const c = S.cine;
   S.finT += dt;
   const t = S.finT;
-  if (!c) { if (t >= END_TOTAL) showMenu(); return; }
+  if (!c) { if (t >= END_TOTAL) mpResOpen(); return; }
   if (c.plan !== c.place) cinePlan(c);
   const { v0, side, d0, wallD } = c, tb = CINE_LEAD;
   let v = v0, d = d0, phi = 0, acc = 0;
@@ -1041,9 +1086,10 @@ function endingTick(dt) {
   P.dist += P.v * dt;
   P.acc = acc; P.thr = 0; P.braking = false; P.steer = 0; P.rpm = 0; P.gear = 3; P.inv = 1;
   P.crash = Math.max(0, P.crash - dt);
-  if (t >= END_TOTAL) showMenu();
+  if (t >= END_TOTAL) mpResOpen();
 }
 function sim(dt) {
+  if (S.mpr) { mpResTick(dt); return; }
   const racing = S.mode === 'race';
   if (S.mode === 'timeout' && !S.mp) {
     S.finT += dt;
@@ -2748,7 +2794,7 @@ function mpOnPeers() {
   if (state.phase === 'results' && S.mp) mpApplyResult(state);
   // No existe un estado online sin cinematográfica: los finales por reloj
   // llegan como 'results', igual que los finales por victoria.
-  if (state.phase === 'lobby' && S.mp && !S.lb && !S.gs && S.mode !== 'menu') showMenu(true);
+  if (state.phase === 'lobby' && S.mp && !S.lb && !S.gs && !S.mpr && S.mode !== 'menu') showMenu(true);
 }
 function mpToggleReady() {
   if (!S.lb || NET.host || !NET.state || NET.state.phase !== 'lobby') return;
@@ -2816,7 +2862,7 @@ function startRaceMP(ord) {
     }
   }
   S.camS = P.dist + 14 + PACE * CD_A;
-  S.te = null; S.mode = 'countdown'; S.cd = Math.max(0, (NET.state ? NET.state.raceAt - mpNow() : CD_TOTAL)); S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; $('touch').dataset.trans = S.trans;
+  S.te = null; S.mode = 'countdown'; S.cd = Math.max(0, (NET.state ? NET.state.raceAt - mpNow() : CD_TOTAL)); S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.mpr = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; $('touch').dataset.trans = S.trans;
   $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true; S.pm = null;
   mpPub({ p: null });
 }
@@ -2925,7 +2971,6 @@ function drawLobby() {
     hx.fillText(pr.h ? 'HOST' : ((NET.state && NET.state.ready[p.peer]) ? 'LISTO' : 'NO LISTO'), 390, y + 15);
     // Cada piloto elige su propia caja: AT (automática) o MT (manual).
     const mt = pr.t === 'manual';
-    if (mine) { hx.fillStyle = '#8a2bd4'; hx.beginPath(); hx.arc(414, y + 14, 9, 0, TAU); hx.fill(); hx.fillStyle = '#e8d2ff'; hx.font = '700 11px Arial'; hx.textAlign = 'center'; hx.fillText('T', 414, y + 14); }
     hx.fillStyle = '#1a1a1e'; rr(432, y + 3, 74, 22, 3); hx.fill(); hx.strokeStyle = '#ff8a1a'; hx.lineWidth = 2; rr(432, y + 3, 74, 22, 3); hx.stroke();
     hx.font = '400 17px ' + F1; hx.textAlign = 'center'; hx.fillStyle = '#ff8a1a'; hx.fillText(mt ? 'MT' : 'AT', 469, y + 15);
     if (mine) L0.hit.push({ k: 'trans', x: 401, y, w: 115, h: 28 });
@@ -3477,6 +3522,7 @@ function drawTimeExt(e) {
 }
 function drawHUD() {
   hx.clearRect(0, 0, HW, HH);
+  if (S.mpr) { drawMpResults(); return; }
   if (S.mode === 'menu') {
     if (S.lb) { drawLobby(); return; }
     if (S.mpe && S.me) { meDraw(S.me); return; }
@@ -3812,7 +3858,7 @@ function render(dt) {
     }
   }
   if (S.mode !== 'timeout') { updateParts(dt); updateCamera(target, dt, false); }
-  if (S.mode === 'menu' && (S.lb || S.mm || S.cs || S.ms || S.gs)) R3.renderer.clear();   // durante las pantallas de selección no se ve la demo por detrás
+  if (S.mpr || (S.mode === 'menu' && (S.lb || S.mm || S.cs || S.ms || S.gs))) R3.renderer.clear();   // durante las pantallas de selección no se ve la demo por detrás
   else R3.renderer.render(R3.scene, R3.camera);
   drawHUD();
   if (S.pm) pmDraw(S.pm);
@@ -3894,7 +3940,7 @@ function repaintPlayer(trans) {
 }
 function showMenu(keepSel) {
   const mpBack = !!(S.mp && NET.r); if (mpBack) keepSel = true;
-  LAPS = 4; S.mode = 'menu'; S.paused = false; msgs = []; S.te = null; S.finT = 0; S.cine = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; S.resultPlace = 20; S.demoT = 0; S.sel = !!keepSel; if (!keepSel) { S.mm = null; S.cs = null; S.ms = null; S.gs = null; } repaintPlayer(S.trans); S.holdFov = null; resCache = null; DEMO.away = null; S.curve = null;
+  LAPS = 4; S.mode = 'menu'; S.paused = false; msgs = []; S.te = null; S.finT = 0; S.cine = null; S.mpr = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; S.resultPlace = 20; S.demoT = 0; S.sel = !!keepSel; if (!keepSel) { S.mm = null; S.cs = null; S.ms = null; S.gs = null; } repaintPlayer(S.trans); S.holdFov = null; resCache = null; DEMO.away = null; S.curve = null;
   if (document.body) document.body.dataset.menu = '1';
   resetPlayer(); makeCars(); finCount = 0; raceT = 0;
   // Restaurar los NPC originales cuando se vuelve de multiplayer al modo individual.
@@ -3936,7 +3982,7 @@ function startRace() {
   P.d=3.75; P.v=PACE; P.dist=-back; P.gear=1; P.steer=0; P.psi=0; P.phi=0; P.inv = CD_TOTAL + 0.5;
   cars.forEach(c => { c.v=PACE; c.run=true; c.dist -= back; });
   S.camS = P.dist + 14 + PACE * CD_A;
-  S.te = null; S.mode = 'countdown'; S.cd = CD_TOTAL; S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; $('touch').dataset.trans = S.trans;
+  S.te = null; S.mode = 'countdown'; S.cd = CD_TOTAL; S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.mpr = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; $('touch').dataset.trans = S.trans;
   $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true; S.pm = null;
 }
 function showEnd() {
