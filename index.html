@@ -946,6 +946,13 @@ function beginSoloFinish(place, completed = true) {
   }
 }
 
+function startMpCine(place) {
+  const v0 = clamp(Math.max(P.v, 43), 43, 75);
+  S.goalPh = false;
+  S.cine = { place, side: P.d < 0 ? -1 : 1, v0, start: P.dist, d0: P.d, event: false, roll: 0, lift: 0,
+    hideCar: false, frozenTime: raceT, look: null, plan: 0 };
+  cinePlan(S.cine);
+}
 function beginFinish(place, completed = true) {
   if (S.mode === 'finish') {
     P.place = place; S.resultPlace = place;
@@ -959,10 +966,12 @@ function beginFinish(place, completed = true) {
   if (S.mp) {
     S.view = 2; applyView();
     if (R3) R3.camAng = 0;
-    const v0 = clamp(Math.max(P.v, 43), 43, 75);
-    S.cine = { place, side: P.d < 0 ? -1 : 1, v0, start: P.dist, d0: P.d, event: false, roll: 0, lift: 0,
-      hideCar: false, frozenTime: raceT, look: null, plan: 0 };
-    cinePlan(S.cine);
+    if (completed) {
+      // Primero GOAL + giro de cámara de 180° con el auto manejándose solo; después arranca la cinemática de su puesto.
+      S.goalPh = true; S.cine = null;
+      S.finLane = P.d; S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
+      beep(880, 0.15); setTimeout(() => beep(1320, 0.3), 160);
+    } else startMpCine(place);
   } else {
     S.cine = null;
     P.v = 0; P.acc = 0; P.thr = 0; P.rpm = 0; P.braking = false;
@@ -1046,7 +1055,8 @@ function sim(dt) {
     if (S.finT + SOLO_TO_OFF >= SOLO_END_TOTAL) showMenu();
     return;
   }
-  if (S.mode === 'finish' && S.mp) { endingTick(dt); return; }
+  if (S.mode === 'finish' && S.mp && S.goalPh && S.finT >= GOAL_END) { startMpCine(S.resultPlace); S.finT = 0.001; P.v = Math.max(P.v, 43); }
+  if (S.mode === 'finish' && S.mp && !S.goalPh) { endingTick(dt); return; }
   if (S.mode === 'finish' && S.finT >= SOLO_END_RES0) {
     // RESULTS (Arcade / FREE): el mundo, los rivales y el cronómetro quedan congelados.
     S.finT += dt;
@@ -2034,7 +2044,7 @@ function updateCamera(st, dt, snap) {
   const fux = f.ux, fuy = f.uy, fuz = f.uz;   // copia: frameAt() reutiliza el mismo objeto
   const v = VIEWS[S.view];
   const endCam = st === P && S.mode === 'finish' && !!S.cine && P.finished && S.finT > 0;
-  const soloEndCam = !S.mp && st === P && S.mode === 'finish' && P.finished && S.finT > 0;
+  const soloEndCam = (!S.mp || S.goalPh) && st === P && S.mode === 'finish' && P.finished && S.finT > 0;
   const shake = S.mode === 'finish' ? 0 : (P.crash > 0 && S.mode !== 'menu' ? P.crash * 0.5 : 0) + (st.v > 60 ? (st.v - 60) * 0.0012 : 0);
   let px, py, pz, lx, ly, lz, fov;
   if (S.mode === 'menu') {
@@ -2809,7 +2819,7 @@ function startRaceMP(ord) {
     }
   }
   S.camS = P.dist + 14 + PACE * CD_A;
-  S.te = null; S.mode = 'countdown'; S.cd = Math.max(0, (NET.state ? NET.state.raceAt - mpNow() : CD_TOTAL)); S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.introT = 0; $('touch').dataset.trans = S.trans;
+  S.te = null; S.mode = 'countdown'; S.cd = Math.max(0, (NET.state ? NET.state.raceAt - mpNow() : CD_TOTAL)); S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.goalPh = false; S.introT = 0; $('touch').dataset.trans = S.trans;
   $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true; S.pm = null;
   mpPub({ p: null });
 }
@@ -2950,7 +2960,7 @@ function drawLobby() {
   btn('trans', 'TRANSMISSION [T]', 76, 190, true);
   btn(NET.host ? 'start' : 'ready', NET.host ? 'START [ENTER]' : (NET.state && NET.state.ready[mpMyPeer()] ? 'CANCELAR LISTO' : 'LISTO [ENTER]'), 290, 190, NET.host ? mpReadyToStart() : !!(NET.state && NET.state.phase === 'lobby'));
   btn('exit', 'EXIT [ESC]', 504, 150, true);
-  hx.fillStyle = '#9fb8e6'; hx.font = '600 13px "Barlow Condensed", Arial, sans-serif'; hx.textAlign = 'right'; hx.fillText(pl.length + '/' + MP_MAX, 724, 419);
+  
 }
 function lbPointer(e) {
   const L0 = S.lb; if (!L0) return;
@@ -3481,7 +3491,7 @@ function drawHUD() {
     return;
   }
   const te = endClock();
-  if (te !== null && te >= (S.mp ? END_RES0 : SOLO_END_RES0)) { drawEnding(te); return; }
+  if (te !== null && !S.goalPh && te >= (S.mp ? END_RES0 : SOLO_END_RES0)) { drawEnding(te); return; }
   // En single-player, GOAL y el HUD se mantienen durante el giro inicial.
   const rank = S.mode === 'timeout' ? S.resultPlace : rankNow();
   const racing = S.mode === 'race' || S.mode === 'countdown';
@@ -3525,7 +3535,7 @@ function drawHUD() {
   // En FREE no hay contador arriba: aprovechar ese espacio para el velocímetro.
   drawTach(HW / 2, S.freeRun ? 155 : 198, 113);
   text('POSITION', HW - 16, 20, 17, '#ffffff', 'right', F2, 4);
-  itext((S.mode === 'finish' || S.mode === 'ended' ? P.place : rank) + (S.mp ? '' : '/' + mpTotal()), HW - 14, 70, 52, '#27e255', 'right', '#0a2a12', 6);
+  itext((S.mode === 'finish' || S.mode === 'ended' ? P.place : rank) + '/' + mpTotal(), HW - 14, 70, 52, '#27e255', 'right', '#0a2a12', 6);
   drawRadar();
   drawMini();
   let y = 272;
@@ -3536,7 +3546,7 @@ function drawHUD() {
   if (S.mode === 'countdown') { const n = Math.ceil(S.cd); if (n > 0 && n <= 3) itext(String(n), HW / 2, 298, 124, '#ffe14a', 'center', '#10224a', 10); }
   else if (S.go > 0) itext('GO!', HW / 2, 330, 120, '#7dff9a', 'center', '#0a2a12', 10);
   if (!S.mp && S.mode === 'finish' && S.endGoal && S.finT < SOLO_GOAL_END) soloDrawGoal(S.finT);
-  else if (S.mp && S.mode === 'finish' && S.endGoal && S.finT < GOAL_END) drawGoal(S.finT);
+  else if (S.mp && S.mode === 'finish' && S.endGoal && S.goalPh) drawGoal(S.finT);
 }
 function ordinal(n) { return n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th'); }
 function gradText(str, x, y, size, stops, stroke, sw, spacing, italic) {
@@ -3558,7 +3568,7 @@ function gradText(str, x, y, size, stops, stroke, sw, spacing, italic) {
    Final de carrera (llegada o tiempo agotado):
    GOAL (solo si llegaste) -> RESULTS + posición (HUD oculto) -> GAME OVER animado -> vuelve la demo.
    --------------------------------------------------------------------- */
-const END_RES0 = 0, END_GO0 = 4.0, END_TOTAL = 12.0, GOAL_END = 0;   // VIDEO: RESULTS desde el inicio, GAME OVER tras la maniobra
+const END_RES0 = 0, END_GO0 = 4.0, END_TOTAL = 12.0, GOAL_END = 4.2;   // VIDEO: RESULTS desde el inicio, GAME OVER tras la maniobra
 const TO_OFF = 0;
 // Solo Arcade/FREE: tiempos del index (4).html. Online conserva los suyos.
 const SOLO_END_RES0 = 8.0, SOLO_END_RES1 = 11.6;
@@ -3782,7 +3792,7 @@ function render(dt) {
   remoteMeshes.forEach(m => { m.group.visible = false; });
   cars.forEach((c, i) => {
     const m = carMeshes[i], remote = S.mp && c.remote ? remoteMeshes[i] : null;
-    const v = (S.mode !== 'finish' || !S.mp) && !c.unused && (!S.mp || !!c.remote || !!c.cpu) && vis(c);   // en la cinemática final no se ve ningún rival: podrían tapar la toma
+    const v = (S.mode !== 'finish' || !S.mp || S.goalPh) && !c.unused && (!S.mp || !!c.remote || !!c.cpu) && vis(c);   // en la cinemática final no se ve ningún rival: podrían tapar la toma
     m.group.visible = v && !remote;
     if (remote) remote.group.visible = v;
     if (v && S.mode !== 'timeout') placeCar(remote || m, c, dt, false);
@@ -3887,7 +3897,7 @@ function repaintPlayer(trans) {
 }
 function showMenu(keepSel) {
   const mpBack = !!(S.mp && NET.r); if (mpBack) keepSel = true;
-  LAPS = 4; S.mode = 'menu'; S.paused = false; msgs = []; S.te = null; S.finT = 0; S.cine = null; S.introT = 0; S.resultPlace = 20; S.demoT = 0; S.sel = !!keepSel; if (!keepSel) { S.mm = null; S.cs = null; S.ms = null; S.gs = null; } repaintPlayer(S.trans); S.holdFov = null; resCache = null; DEMO.away = null; S.curve = null;
+  LAPS = 4; S.mode = 'menu'; S.paused = false; msgs = []; S.te = null; S.finT = 0; S.cine = null; S.goalPh = false; S.introT = 0; S.resultPlace = 20; S.demoT = 0; S.sel = !!keepSel; if (!keepSel) { S.mm = null; S.cs = null; S.ms = null; S.gs = null; } repaintPlayer(S.trans); S.holdFov = null; resCache = null; DEMO.away = null; S.curve = null;
   if (document.body) document.body.dataset.menu = '1';
   resetPlayer(); makeCars(); finCount = 0; raceT = 0;
   // Restaurar los NPC originales cuando se vuelve de multiplayer al modo individual.
@@ -3929,7 +3939,7 @@ function startRace() {
   P.d=3.75; P.v=PACE; P.dist=-back; P.gear=1; P.steer=0; P.psi=0; P.phi=0; P.inv = CD_TOTAL + 0.5;
   cars.forEach(c => { c.v=PACE; c.run=true; c.dist -= back; });
   S.camS = P.dist + 14 + PACE * CD_A;
-  S.te = null; S.mode = 'countdown'; S.cd = CD_TOTAL; S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.introT = 0; $('touch').dataset.trans = S.trans;
+  S.te = null; S.mode = 'countdown'; S.cd = CD_TOTAL; S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.goalPh = false; S.introT = 0; $('touch').dataset.trans = S.trans;
   $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true; S.pm = null;
 }
 function showEnd() {
