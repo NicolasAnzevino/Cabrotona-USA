@@ -114,7 +114,35 @@ body {
 #touch[data-trans="auto"] .tbtn.small { display: none; }
 #end { background: transparent; place-items: end center; }
 #end .card { background: rgba(8, 18, 46, .86); padding: 14px 22px; border: 2px solid var(--line); border-radius: 6px; }
-@media (pointer: coarse) { .touch { display: grid; } .keys { display: none; } }
+/* ---- Celular / táctil: pantalla completa en horizontal, controles grandes encima del juego ---- */
+.tmisc, #rot { display: none; }
+@media (pointer: coarse) {
+  html, body { height: 100%; overflow: hidden; overscroll-behavior: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  body { background: #000; }
+  .shell { position: fixed; inset: 0; max-width: none; padding: 0; gap: 0; align-items: center; justify-content: center; }
+  .top, .keys { display: none; }
+  .frame { width: min(100vw, calc(100dvh * 16 / 9)); border: 0; border-radius: 0; touch-action: none; }
+  .touch { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: none; pointer-events: none; justify-content: space-between; align-items: flex-end; gap: 0;
+    padding: 0 max(12px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+  body.racing .touch { display: flex; }
+  .touch .grp { display: flex; gap: 12px; align-items: flex-end; pointer-events: none; }
+  .tbtn { pointer-events: auto; flex: none; border-radius: 16px; padding: 0; opacity: .62; font-size: clamp(18px, 5.5dvh, 28px); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+  .tbtn[data-k="left"], .tbtn[data-k="right"] { width: clamp(84px, 24dvh, 130px); height: clamp(84px, 24dvh, 130px); }
+  .tbtn.gas { width: clamp(96px, 28dvh, 150px); height: clamp(110px, 32dvh, 170px); }
+  .tbtn.brk { width: clamp(80px, 22dvh, 120px); height: clamp(80px, 22dvh, 120px); font-size: clamp(14px, 4dvh, 22px); }
+  .tbtn.small { width: clamp(56px, 16dvh, 84px); height: clamp(56px, 16dvh, 84px); font-size: clamp(24px, 7dvh, 38px); padding: 0; }
+  .tbtn.brk { order: 1; } #tDown { order: 2; } #tUp { order: 3; } .tbtn.gas { order: 4; }
+  .tbtn.on { opacity: .95; }
+  .tmisc { position: fixed; z-index: 21; display: none; gap: clamp(230px, 62dvh, 340px); top: max(26px, calc(env(safe-area-inset-top) + 18px)); left: 50%; transform: translateX(-50%); }
+  .tmisc.back { left: max(10px, env(safe-area-inset-left)); top: max(10px, env(safe-area-inset-top)); bottom: auto; transform: none; }
+  .tmisc button { font: 400 clamp(16px, 4.6dvh, 22px) var(--f-display); letter-spacing: .05em; color: #fff; background: rgba(8, 18, 46, .72); border: 2px solid var(--line); border-radius: 12px; min-width: 56px; min-height: 48px; padding: 6px 16px; opacity: .8; touch-action: manipulation; }
+  body.racing .tmisc.race { display: flex; }
+  body.inmenu .tmisc.back { display: flex; }
+  #rot { position: fixed; inset: 0; z-index: 100; background: #08122e; color: #fff; place-items: center; text-align: center; font: 400 22px var(--f-display); padding: 24px; }
+  #rot span { display: block; font-size: 64px; margin-bottom: 14px; animation: rotP 1.8s ease-in-out infinite; }
+  @media (orientation: portrait) { #rot { display: grid; } }
+}
+@keyframes rotP { 0%, 20% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
 @media (max-width: 700px) {
   .card .lede, .card .help { display: none; }
   .card { gap: 8px; }
@@ -196,6 +224,10 @@ body {
       <button class="tbtn small" id="tUp" type="button" aria-label="Subir marcha">+</button>
     </div>
   </div>
+
+  <div class="tmisc race" id="tRace"><button id="tCam" type="button" aria-label="Cambiar cámara">CAM</button><button id="tPause" type="button" aria-label="Pausa">&#10074;&#10074;</button></div>
+  <div class="tmisc back" id="tBack"><button id="tBackBtn" type="button" aria-label="Volver">&#9664; VOLVER</button></div>
+  <div id="rot"><div><span>&#128241;</span>Girá el celular<br>en horizontal para jugar</div></div>
 
   <ul class="keys">
     <li><kbd>&#8593;</kbd>Acelerar</li>
@@ -3948,15 +3980,19 @@ function drawPlayerTags() {
     _tagV.project(cam); if (_tagV.z > 1 || _tagV.z < -1) continue;
     const x = (_tagV.x * 0.5 + 0.5) * HW, y = (1 - (_tagV.y * 0.5 + 0.5)) * HH;
     if (x < -40 || x > HW + 40 || y < -40 || y > HH + 40) continue;
-    const sz = clamp(1100 / dist, 13, 40), col = MP_CARS[Math.max(0, tg.seat - 1)].top, a = dist > 110 ? clamp((150 - dist) / 40, 0, 1) : 1;
-    hx.save(); hx.globalAlpha = a; hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.lineJoin = 'round';
-    hx.font = 'italic 900 ' + sz + 'px ' + F1; hx.lineWidth = Math.max(3, sz * 0.16); hx.strokeStyle = '#000';
-    const ty = y - sz * 0.9;
-    hx.strokeText(tg.seat + 'P', x, ty); hx.fillStyle = col; hx.fillText(tg.seat + 'P', x, ty);
-    hx.lineWidth = Math.max(2, sz * 0.06); hx.strokeStyle = '#fff'; hx.strokeText(tg.seat + 'P', x, ty);
-    const aw = sz * 0.32, ah = sz * 0.42, ay = ty + sz * 0.62;
-    hx.beginPath(); hx.moveTo(x - aw * 0.45, ay); hx.lineTo(x + aw * 0.45, ay); hx.lineTo(x + aw * 0.45, ay + ah * 0.5); hx.lineTo(x + aw, ay + ah * 0.5); hx.lineTo(x, ay + ah * 1.15); hx.lineTo(x - aw, ay + ah * 0.5); hx.lineTo(x - aw * 0.45, ay + ah * 0.5); hx.closePath();
-    hx.lineWidth = Math.max(3, sz * 0.14); hx.strokeStyle = '#000'; hx.stroke(); hx.fillStyle = col; hx.fill();
+    const sz = clamp(1500 / dist, 16, 56), col = MP_CARS[Math.max(0, tg.seat - 1)].top, a = dist > 110 ? clamp((150 - dist) / 40, 0, 1) : 1;
+    const txt = tg.seat + 'P', ty = y - sz * 1.15;
+    hx.save(); hx.globalAlpha = a * 0.92; hx.lineJoin = 'round'; hx.lineCap = 'round';
+    // numero alto y angosto, relleno de color con contorno blanco fino (como Daytona USA)
+    hx.translate(x, ty); hx.scale(0.72, 1.35);
+    hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.font = '900 ' + sz + 'px ' + F1;
+    hx.lineWidth = Math.max(2.5, sz * 0.14); hx.strokeStyle = '#fff'; hx.strokeText(txt, 0, 0);
+    hx.fillStyle = col; hx.fillText(txt, 0, 0);
+    hx.restore(); hx.save(); hx.globalAlpha = a * 0.92; hx.lineJoin = 'round';
+    // flecha: tallo fino + punta triangular, mismo color con borde blanco
+    const sw = sz * 0.11, sy0 = ty + sz * 0.62, sy1 = sy0 + sz * 0.5, hw = sz * 0.26, hy = sy1 + sz * 0.3;
+    hx.beginPath(); hx.moveTo(x - sw, sy0); hx.lineTo(x + sw, sy0); hx.lineTo(x + sw, sy1); hx.lineTo(x + hw, sy1); hx.lineTo(x, hy); hx.lineTo(x - hw, sy1); hx.lineTo(x - sw, sy1); hx.closePath();
+    hx.lineWidth = Math.max(2, sz * 0.09); hx.strokeStyle = '#fff'; hx.stroke(); hx.fillStyle = col; hx.fill();
     hx.restore();
   }
 }
@@ -4552,7 +4588,22 @@ window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; f
 document.addEventListener('visibilitychange', () => { if (document.hidden) { if (!S.mp) setPause(true); if (MUSIC) MUSIC.pause(); if (SELMUS) SELMUS.pause(); } else { musicSync(); selMusicSync(); } });
 const musicUnlock = () => { if (MUSIC && musicOn && MUSIC.paused && S.mode === 'menu') musicSync(); if (SELMUS && selMusicOn && SELMUS.paused) selMusicSync(); };
 window.addEventListener('pointerdown', musicUnlock, true); window.addEventListener('keydown', musicUnlock, true);
-window.addEventListener('resize', resize);
+window.addEventListener('resize', resize); window.addEventListener('orientationchange', () => setTimeout(resize, 250));
+// Táctil: botones de cámara / pausa / volver (simulan las teclas) y pantalla completa horizontal al primer toque
+const keySim = code => window.dispatchEvent(new KeyboardEvent('keydown', { code, key: code, bubbles: true }));
+$('tCam').addEventListener('click', () => keySim('KeyV'));
+$('tPause').addEventListener('click', () => keySim('KeyP'));
+$('tBackBtn').addEventListener('click', () => keySim('Escape'));
+function touchUiSync() {
+  const r = (S.mode === 'race' || S.mode === 'countdown') && !S.pm && !S.rk && !S.mpr;
+  const m = S.mode === 'menu' && !!(S.sel || S.mpe) && !S.rk && !S.gs;
+  const b = document.body; if (b.classList.contains('racing') !== r) b.classList.toggle('racing', r); if (b.classList.contains('inmenu') !== m) b.classList.toggle('inmenu', m);
+}
+if (window.matchMedia && matchMedia('(pointer: coarse)').matches) {
+  window.addEventListener('pointerdown', () => {
+    try { const d = document.documentElement; if (!document.fullscreenElement && d.requestFullscreen) d.requestFullscreen().then(() => { try { screen.orientation.lock('landscape').catch(() => { }); } catch (e) { } }).catch(() => { }); } catch (e) { }
+  }, { once: true });
+}
 document.querySelectorAll('.tbtn[data-k]').forEach(b => {
   const k = b.dataset.k;
   const on = e => { touch[k] = true; b.classList.add('on'); e.preventDefault(); };
@@ -4621,6 +4672,7 @@ function frame(now) {
   const dt = Math.min(0.25, (now - last) / 1000 || 0); last = now; accT += dt;
   const STEP = 1 / 60;
   while (accT >= STEP) { step(STEP); accT -= STEP; }
+  touchUiSync();
   if (R3) { try { render(dt); } catch (e) { if (!frame.err) { frame.err = true; console.error(e); } } }
   requestAnimationFrame(frame);
 }
