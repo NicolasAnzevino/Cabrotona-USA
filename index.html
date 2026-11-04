@@ -115,7 +115,7 @@ body {
 #end { background: transparent; place-items: end center; }
 #end .card { background: rgba(8, 18, 46, .86); padding: 14px 22px; border: 2px solid var(--line); border-radius: 6px; }
 /* ---- Celular / táctil: pantalla completa en horizontal, controles grandes encima del juego ---- */
-.tmisc, #rot { display: none; }
+.tmisc { display: none; }
 @media (pointer: coarse) {
   html, body { height: 100%; overflow: hidden; overscroll-behavior: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
   body { background: #000; }
@@ -138,11 +138,24 @@ body {
   .tmisc button { font: 400 clamp(16px, 4.6dvh, 22px) var(--f-display); letter-spacing: .05em; color: #fff; background: rgba(8, 18, 46, .72); border: 2px solid var(--line); border-radius: 12px; min-width: 56px; min-height: 48px; padding: 6px 16px; opacity: .8; touch-action: manipulation; }
   body.racing .tmisc.race { display: flex; }
   body.inmenu .tmisc.back { display: flex; }
-  #rot { position: fixed; inset: 0; z-index: 100; background: #08122e; color: #fff; place-items: center; text-align: center; font: 400 22px var(--f-display); padding: 24px; }
-  #rot span { display: block; font-size: 64px; margin-bottom: 14px; animation: rotP 1.8s ease-in-out infinite; }
-  @media (orientation: portrait) { #rot { display: grid; } }
+  @media (orientation: portrait) {
+    .shell { justify-content: flex-start; }
+    .frame { width: 100vw; margin-top: env(safe-area-inset-top, 0px); }
+    .tmisc.race { top: calc(100vw * 9 / 16 + 14px + env(safe-area-inset-top, 0px)); gap: 36vw; }
+    .tmisc.back { top: calc(100vw * 9 / 16 + 14px + env(safe-area-inset-top, 0px)); }
+    .touch { padding-bottom: max(28px, env(safe-area-inset-bottom)); padding-left: 3vw; padding-right: 3vw; }
+    .touch .grp { gap: 2.5vw; }
+    .tbtn { opacity: .7; border-radius: 18px; }
+    .tbtn[data-k="left"], .tbtn[data-k="right"] { width: 22vw; height: 30vw; max-width: 130px; max-height: 170px; }
+    .touch .grp:last-child { display: grid; grid-template-columns: auto auto; column-gap: 2.5vw; row-gap: 2.5vw; align-items: end; justify-items: end; }
+    .tbtn.gas { grid-area: 1 / 2; width: 29vw; height: 36vw; max-width: 150px; max-height: 190px; font-size: 22px; }
+    .tbtn.brk { grid-area: 2 / 2; width: 29vw; height: 19vw; max-width: 150px; max-height: 100px; font-size: 16px; }
+    .tbtn.small { width: 16vw; height: 16vw; max-width: 80px; max-height: 80px; font-size: 30px; }
+    #tUp { grid-area: 1 / 1; align-self: end; } #tDown { grid-area: 2 / 1; }
+    .tbtn.brk, #tDown, #tUp, .tbtn.gas { order: 0; }
+  }
 }
-@keyframes rotP { 0%, 20% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
+
 @media (max-width: 700px) {
   .card .lede, .card .help { display: none; }
   .card { gap: 8px; }
@@ -227,8 +240,7 @@ body {
 
   <div class="tmisc race" id="tRace"><button id="tCam" type="button" aria-label="Cambiar cámara">CAM</button><button id="tPause" type="button" aria-label="Pausa">&#10074;&#10074;</button></div>
   <div class="tmisc back" id="tBack"><button id="tBackBtn" type="button" aria-label="Volver">&#9664; VOLVER</button></div>
-  <div id="rot"><div><span>&#128241;</span>Girá el celular<br>en horizontal para jugar</div></div>
-
+  
   <ul class="keys">
     <li><kbd>&#8593;</kbd>Acelerar</li>
     <li><kbd>&#8595;</kbd>Frenar</li>
@@ -1096,7 +1108,7 @@ const RK_NAME_TIME = 10, RK_PAGE_TIME = 6, RK_INTRO = 32;   // el ranking aparec
 // Final de Arcade: si el tiempo entra en el ranking se pide el nombre; si no, vuelve a la demo.
 function soloEnd() {
   if (S.rk) return;
-  if (!S.mp && !S.freeRun && S.mode === 'finish' && P.finished && S.finalT > 0 && rkQualifies(S.finalT)) rkOpenName(); else showMenu();
+  if (!S.mp && !S.freeRun && S.mode === 'finish' && P.finished && S.finalT > 0 && rkQualifies(S.finalT)) rkOpenName(); else if (!S.mp && S.freeRun && S.mode === 'finish') S.rk = { mode: 'title', t: 0 }; else showMenu();
 }
 function rkBuildBg() {
   // Fondo de Name Entry: degradé azul + el logo original CABROTONA USA (de la pantalla de título) pasado a plateado translúcido, como el logo de SEGA de la referencia.
@@ -1280,17 +1292,16 @@ function drawScoreboard() {
   const list = RK.filter(r => k.filt === 0 || r.m === (k.filt === 1 ? 'AT' : 'MT'));
   for (let i = 0; i < 10; i++) {
     const y = 152 + i * 23, r = list[i];
-    hx.fillStyle = r && r.me ? '#000' : (i % 2 ? '#6e728b' : '#8b8fa8'); hx.fillRect(76, y, 648, 21);
+    hx.fillStyle = i % 2 ? '#6e728b' : '#8b8fa8'; hx.fillRect(76, y, 648, 21);
     hx.fillStyle = '#bfc3d6'; hx.fillRect(76, y + 21, 648, 2);
     if (!r) continue;
-    const mine = !!r.me, col = mine ? '#ffd21a' : '#ffffff';
+    const mine = false, col = '#ffffff';
     if (mine) { hx.fillStyle = '#ffd21a'; hx.beginPath(); hx.moveTo(84, y + 5); hx.lineTo(94, y + 10.5); hx.lineTo(84, y + 16); hx.closePath(); hx.fill(); }
     hx.fillStyle = col; hx.font = '400 15px ' + F1; hx.textAlign = 'center'; hx.fillText(String(i + 1), 140, y + 11);
     hx.textAlign = 'left'; hx.fillText(r.n, 230, y + 11);
     hx.font = '700 15px ' + F2; hx.textAlign = 'center'; hx.fillText(r.m, 470, y + 11);
     hx.font = '400 15px ' + F1; hx.textAlign = 'right'; hx.fillText(lapStr(r.t), 690, y + 11);
   }
-  hx.font = '700 13px ' + F2; hx.textAlign = 'right'; hx.fillStyle = '#bfc3d6'; hx.fillText('TOTAL RECORDS : ' + list.length, 722, 396);
   const bw = tw('VOLVER', 25); const rc = mmItem('VOLVER', 400 - bw / 2, 414, true); k.hit.push({ k: 'back', x: rc.x, y: rc.y, w: rc.w, h: rc.h });
   hx.textBaseline = 'alphabetic';
 }
@@ -4601,7 +4612,7 @@ function touchUiSync() {
 }
 if (window.matchMedia && matchMedia('(pointer: coarse)').matches) {
   window.addEventListener('pointerdown', () => {
-    try { const d = document.documentElement; if (!document.fullscreenElement && d.requestFullscreen) d.requestFullscreen().then(() => { try { screen.orientation.lock('landscape').catch(() => { }); } catch (e) { } }).catch(() => { }); } catch (e) { }
+    try { const d = document.documentElement; if (!document.fullscreenElement && d.requestFullscreen) d.requestFullscreen().catch(() => { }); } catch (e) { }
   }, { once: true });
 }
 document.querySelectorAll('.tbtn[data-k]').forEach(b => {
