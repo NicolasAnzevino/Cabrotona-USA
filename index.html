@@ -3936,6 +3936,30 @@ function drawTimeExt(e) {
   gradText(lapStr(e.lt), 0, 60, 30, ['#ffffff', '#f4ecc8', '#ffc83a'], '#3c1d00', 5, 2, false);
   hx.restore();
 }
+const _tagV = typeof THREE !== 'undefined' ? new THREE.Vector3() : null;
+function drawPlayerTags() {
+  // Multijugador: sobre cada jugador aparece su "1P", "2P"... con una flecha, y cada tanto titila (como en Daytona USA).
+  const tags = S.tags; if (!S.mp || !tags || !tags.length || !R3 || !_tagV) return;
+  const cam = R3.camera, ph = (S.t % 3.4), blinkOff = ph > 2.7 && Math.floor(S.t * 9) % 2 === 0;
+  if (blinkOff) return;
+  for (const tg of tags) {
+    const gp = tg.g.position; _tagV.set(gp.x, gp.y + 2.7, gp.z);
+    const dist = cam.position.distanceTo(_tagV); if (dist > 150 || dist < 2) continue;
+    _tagV.project(cam); if (_tagV.z > 1 || _tagV.z < -1) continue;
+    const x = (_tagV.x * 0.5 + 0.5) * HW, y = (1 - (_tagV.y * 0.5 + 0.5)) * HH;
+    if (x < -40 || x > HW + 40 || y < -40 || y > HH + 40) continue;
+    const sz = clamp(1100 / dist, 13, 40), col = MP_CARS[Math.max(0, tg.seat - 1)].top, a = dist > 110 ? clamp((150 - dist) / 40, 0, 1) : 1;
+    hx.save(); hx.globalAlpha = a; hx.textAlign = 'center'; hx.textBaseline = 'middle'; hx.lineJoin = 'round';
+    hx.font = 'italic 900 ' + sz + 'px ' + F1; hx.lineWidth = Math.max(3, sz * 0.16); hx.strokeStyle = '#000';
+    const ty = y - sz * 0.9;
+    hx.strokeText(tg.seat + 'P', x, ty); hx.fillStyle = col; hx.fillText(tg.seat + 'P', x, ty);
+    hx.lineWidth = Math.max(2, sz * 0.06); hx.strokeStyle = '#fff'; hx.strokeText(tg.seat + 'P', x, ty);
+    const aw = sz * 0.32, ah = sz * 0.42, ay = ty + sz * 0.62;
+    hx.beginPath(); hx.moveTo(x - aw * 0.45, ay); hx.lineTo(x + aw * 0.45, ay); hx.lineTo(x + aw * 0.45, ay + ah * 0.5); hx.lineTo(x + aw, ay + ah * 0.5); hx.lineTo(x, ay + ah * 1.15); hx.lineTo(x - aw, ay + ah * 0.5); hx.lineTo(x - aw * 0.45, ay + ah * 0.5); hx.closePath();
+    hx.lineWidth = Math.max(3, sz * 0.14); hx.strokeStyle = '#000'; hx.stroke(); hx.fillStyle = col; hx.fill();
+    hx.restore();
+  }
+}
 function drawHUD() {
   hx.clearRect(0, 0, HW, HH);
   if (S.mpr) { drawMpResults(); return; }
@@ -3961,6 +3985,7 @@ function drawHUD() {
   // En single-player, GOAL y el HUD se mantienen durante el giro inicial.
   const rank = S.mode === 'timeout' ? S.resultPlace : rankNow();
   const racing = S.mode === 'race' || S.mode === 'countdown';
+  if (racing) drawPlayerTags();
   const sp = clamp((P.v - 55) / 35, 0, 1);
   if (sp > 0.05) {
     hx.strokeStyle = 'rgba(255,255,255,' + (0.22 * Math.min(1, sp)).toFixed(2) + ')'; hx.lineWidth = 2;
@@ -4269,15 +4294,18 @@ function render(dt) {
   const target = P;
   const vis = (st) => { const g = cdiff(st.dist - target.dist); return g > -90 && g < 1100; };
   remoteMeshes.forEach(m => { m.group.visible = false; });
+  S.tags = [];
   cars.forEach((c, i) => {
     const m = carMeshes[i], remote = S.mp && c.remote ? remoteMeshes[i] : null;
     const v = (S.mode !== 'finish' || !S.mp) && !c.unused && (!S.mp || !!c.remote || !!c.cpu) && vis(c);   // en la cinemática final no se ve ningún rival: podrían tapar la toma
     m.group.visible = v && !remote;
     if (remote) remote.group.visible = v;
     if (v && S.mode !== 'timeout') placeCar(remote || m, c, dt, false);
+    if (remote && v && S.mode === 'race') S.tags.push({ seat: c.seat || mpSeat(c.remote), g: remote.group });
   });
   const showP = true;
   playerMesh.group.visible = !(S.mode === 'finish' && S.cine && S.cine.hideCar);
+  if (S.mp && S.mode === 'countdown') S.tags.push({ seat: S.mySeat || mpSeat(mpMyPeer()), g: playerMesh.group, mine: true });
   if (S.mode !== 'timeout') placeCar(playerMesh, P, dt, P.tumble > 0 && P.kind === 'flip');
   if (S.mode !== 'timeout') animateCarGlass(playerMesh, P, dt);
   updateDamageMesh();
