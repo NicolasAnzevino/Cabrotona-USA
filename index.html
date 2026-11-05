@@ -128,10 +128,11 @@ body {
   .touch .grp { display: flex; gap: 12px; align-items: flex-end; pointer-events: none; }
   .tbtn { pointer-events: auto; flex: none; border-radius: 16px; padding: 0; opacity: .62; font-size: clamp(18px, 5.5dvh, 28px); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
   .tbtn[data-k="left"], .tbtn[data-k="right"] { width: clamp(84px, 24dvh, 130px); height: clamp(84px, 24dvh, 130px); }
-  .tbtn.gas { width: clamp(96px, 28dvh, 150px); height: clamp(110px, 32dvh, 170px); }
-  .tbtn.brk { width: clamp(80px, 22dvh, 120px); height: clamp(80px, 22dvh, 120px); font-size: clamp(14px, 4dvh, 22px); }
-  .tbtn.small { width: clamp(56px, 16dvh, 84px); height: clamp(56px, 16dvh, 84px); font-size: clamp(24px, 7dvh, 38px); padding: 0; }
-  .tbtn.brk { order: 1; } #tDown { order: 2; } #tUp { order: 3; } .tbtn.gas { order: 4; }
+  .touch .grp:last-child { display: grid; grid-template-columns: auto auto; column-gap: 12px; row-gap: 10px; align-items: end; justify-items: end; }
+  .tbtn.gas { grid-area: 1 / 2; width: clamp(92px, 27dvh, 140px); height: clamp(60px, 19dvh, 100px); }
+  .tbtn.brk { grid-area: 2 / 2; width: clamp(92px, 27dvh, 140px); height: clamp(46px, 13dvh, 70px); font-size: clamp(14px, 4dvh, 22px); }
+  .tbtn.small { width: clamp(50px, 14dvh, 70px); height: clamp(46px, 13dvh, 64px); font-size: clamp(24px, 7dvh, 36px); padding: 0; }
+  #tUp { grid-area: 1 / 1; } #tDown { grid-area: 2 / 1; }
   .tbtn.on { opacity: .95; }
   .tmisc { position: fixed; z-index: 21; display: none; gap: clamp(230px, 62dvh, 340px); top: max(26px, calc(env(safe-area-inset-top) + 18px)); left: 50%; transform: translateX(-50%); }
   .tmisc.back { left: max(10px, env(safe-area-inset-left)); top: max(10px, env(safe-area-inset-top)); bottom: auto; transform: none; }
