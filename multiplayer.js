@@ -6,6 +6,8 @@
   async function join(roomName) {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(wsURL());
+      let lastSnapshotTick = -1;
+      let ownPose = null;
       const everyone = new Map();
       const listeners = new Set();
       const lostListeners = new Set();
@@ -16,6 +18,24 @@
       let session = null;
       let syncInterval = null;
       const clock = { valid: false, offset: 0, rtt: 0, jitter: 0, samples: [] };
+      let roughOffset = 0;
+      const liveRank = { rid: 0, seq: 0, order: [], queued: [] };
+      const resetRank = state => {
+        liveRank.rid = Number(state?.rid) || 0;
+        liveRank.seq = Number(state?.rankSeq) || 0;
+        liveRank.order = Array.isArray(state?.rankOrder) && state.rankOrder.length
+          ? state.rankOrder.slice() : (Array.isArray(state?.ord) ? state.ord.slice() : []);
+        liveRank.queued = [];
+      };
+      const rankAtServerTime = () => {
+        const now = Date.now() / 1000 + (clock.valid ? clock.offset : roughOffset);
+        while (liveRank.queued.length && liveRank.queued[0].applyAt <= now) {
+          const next = liveRank.queued.shift();
+          liveRank.seq = next.seq;
+          liveRank.order = next.order;
+        }
+        return { rid: liveRank.rid, seq: liveRank.seq, order: liveRank.order.slice() };
+      };
       const pingClock = () => {
         if (ws.readyState === WebSocket.OPEN && established) send({ type: 'time_ping', t0: Date.now() / 1000 });
       };
@@ -39,6 +59,13 @@
       const api = {
         peers: () => Array.from(everyone.values()),
         state: () => session,
+        ranking: rankAtServerTime,
+        authoritative: () => ownPose,
+        input: input => {
+          if (!established || ws.readyState !== WebSocket.OPEN) return;
+          // El servidor únicamente admite controles: nunca aceptará posiciones declaradas por el cliente.
+          send({ type: 'input', ...input });
+        },
         clock: () => ({ valid: clock.valid, offset: clock.offset, rtt: clock.rtt, jitter: clock.jitter }),
         command: (cmd, value) => send({ type: "command", cmd, value }),
         onPeers: (fn, onLost) => {
@@ -57,12 +84,13 @@
           intentionalClose = true;
           established = false;
           if (syncInterval !== null) { clearInterval(syncInterval); syncInterval = null; }
+          ownPose = null;
           if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(1000, 'Salida de sala');
         }
       };
 
       ws.addEventListener('open', () => {
-        try { send({ type: 'join', room: roomName }); }
+        try { send({ type: 'join', room: roomName, protocol: 32 }); }
         catch (err) { if (!completed) { completed = true; reject(err); } }
       });
       ws.addEventListener('message', event => {
@@ -79,13 +107,55 @@
           everyone.clear();
           for (const peer of message.peers || []) addOrChange(peer.id, peer.presence, true, peer.slot);
           established = true;
-          if (message.state) session = message.state;
+          if (message.state) {
+            session = message.state;
+            roughOffset = Number(session.serverNow) - Date.now() / 1000 || 0;
+            resetRank(session);
+          }
           pingClock();
           if (syncInterval === null) syncInterval = setInterval(pingClock, 3000);
           if (!completed) { completed = true; resolve(api); }
           notify();
         } else if (message.type === 'room_state') {
+          const newRace = !session || message.rid !== session.rid;
           session = message;
+          if (newRace || message.phase === 'lobby') {
+            resetRank(message);
+            lastSnapshotTick = -1;
+            ownPose = null;
+            for (const peer of everyone.values()) { peer.samples.length = 0; peer.lastSeq = -1; }
+          }
+          notify();
+        } else if (message.type === 'race_snapshot') {
+          if (!session || message.rid !== session.rid ||
+              !Number.isInteger(message.tick) || message.tick <= lastSnapshotTick ||
+              !Number.isFinite(message.serverNow) || !message.cars ||
+              typeof message.cars !== 'object') return;
+          lastSnapshotTick = message.tick;
+          for (const [id, pose] of Object.entries(message.cars)) {
+            if (!Array.isArray(pose) || pose.length < 12 || !pose.slice(0, 9).every(Number.isFinite)) continue;
+            if (id === selfId) {
+              ownPose = { p: pose.slice(), tick: message.tick, serverNow: message.serverNow };
+            } else {
+              // Todos ven las MISMAS posiciones del servidor. El retraso visual
+              // es solo interpolación; no hay múltiples físicas independientes.
+              const peer = everyone.get(id);
+              if (!peer) continue;
+              peer.presence.p = pose.slice(0, 8);
+              peer.updatedAt = Date.now();
+              peer.samples.push({ t: message.serverNow, p: pose.slice(0, 8) });
+              if (peer.samples.length > 16) peer.samples.splice(0, peer.samples.length - 16);
+            }
+          }
+          // Las posiciones se leen durante el loop de render para evitar
+          // recalcular menús/estado de lobby 30 veces por segundo.
+        } else if (message.type === 'race_standings') {
+          if (!session || message.rid !== session.rid || !Array.isArray(message.order) ||
+              !Number.isInteger(message.seq) || !Number.isFinite(message.applyAt)) return;
+          const highest = liveRank.queued.length
+            ? liveRank.queued[liveRank.queued.length - 1].seq : liveRank.seq;
+          if (message.seq <= highest) return;
+          liveRank.queued.push({ seq: message.seq, order: message.order.slice(), applyAt: message.applyAt });
           notify();
         } else if (message.type === 'error_notice') {
           session = { ...(session || {}), notice: message.message };

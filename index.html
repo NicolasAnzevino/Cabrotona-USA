@@ -1068,34 +1068,8 @@ function carContacts(dt) {
     if (S.mp && c.cpu) { cpuContact(c, dt); continue; }
     if (P.inv > 0) continue;
     if (S.mp && c.remote) {
-      // En multijugador cada navegador es dueño de su auto. Nunca modificar
-      // c.dist/c.d/c.v: el siguiente snapshot desharía el cambio y teletransportaría al rival.
-      if (c.netAge == null || c.netAge > 0.45 || !Number.isFinite(c.netHitDist)) continue;
-      const g = cdiff(c.netHitDist - P.dist), dd = c.netHitD - P.d;
-      const nearDist = P.dist + g; // misma vuelta LOCAL, aunque el rival esté una vuelta detrás
-      if (Math.abs(g) >= CAR_L || Math.abs(dd) >= CAR_WD) continue;
-      const pg = (CAR_L - Math.abs(g)) / CAR_L, pd = (CAR_WD - Math.abs(dd)) / CAR_WD;
-      if (pg <= pd) {
-        if (g > 0) {
-          const rel = P.v - c.v;
-          P.dist = Math.min(P.dist, nearDist - CAR_L - 0.03);
-          if (rel > 0) {
-            if (rel > 9) registerHit(lineRegions('f', dd), 1);
-            P.v = Math.max(0, Math.min(P.v, c.v + Math.max(0, rel) * 0.45));
-          }
-        } else {
-          P.dist = Math.max(P.dist, nearDist + CAR_L + 0.03);
-          P.v = Math.min(MAXV * 1.2, Math.max(P.v, c.v * 0.96));
-        }
-      } else {
-        const side = Math.sign(P.d - c.netHitD) || 1;
-        P.d = clamp(c.netHitD + side * (CAR_WD + 0.03), -WALL + CAR_WD / 2, WALL - CAR_WD / 2);
-        P.sv = side * Math.min(6, Math.max(1, Math.abs(P.sv || 0)));
-        P.v *= 1 - Math.min(0.16, dt * 4);
-        P.shoveT = Math.max(P.shoveT || 0, 0.25);
-      }
-      P.crash = Math.max(P.crash, 0.12);
-      if (!(P.sideCD > 0)) { P.sideCD = 0.25; thump(0.3); beep(165, 0.08, 'square', 0.05); }
+      // En v32 las colisiones entre jugadores las resuelve SOLO el servidor.
+      // Un navegador no puede empujar unilateralmente al auto del otro.
       continue;
     }
     const g = cdiff(c.dist - P.dist), dd = c.d - P.d, ag = Math.abs(g), ad = Math.abs(dd);
@@ -1107,9 +1081,7 @@ function carContacts(dt) {
       const over = CAR_L - ag + 0.03, away = Math.sign(P.d - c.d) || (Math.random() < 0.5 ? 1 : -1);
       if (rearIsP) { P.dist -= over * 0.1; c.dist += over * 0.9; } else { P.dist += over * 0.7; c.dist -= over * 0.3; }
       if (rel > 0.2) {
-        // Impacto real contra otro auto por delante: marca el capó, una sola vez.
-        // Si otro auto nos golpea por atrás, la carrocería trasera queda intacta.
-        if (rearIsP && rel > 9) registerHit(lineRegions('f', dd), 1);
+        // Los contactos con autos cambian la velocidad y producen efectos, pero NO doblan el capó.
         const j = rel * (1 + CONTACT_E) / 2, boost = 1.2 + rel * 0.12, vHit = vR;
         if (rearIsP) { P.v = Math.max(0, P.v - rel * 0.45); c.v += rel * 0.55 + boost; if (!S.mp && c.brakeT > 0 && rel > 15 && P.tumble <= 0) { tumbleStart(P, 'spin'); P.sv = 0; } else if (!S.mp && c.safe <= 0 && c.tumble <= 0 && rel > 30) npcCrash(c, rel > 46 ? 'flip' : 'spin'); }   // le pegás por atrás: te frena (choque inelástico), sin rebote
         else { P.v = Math.min(MAXV * 1.2, P.v + j + boost + 2); c.v = Math.max(0, c.v - j); }
@@ -1708,10 +1680,12 @@ function sim(dt) {
   }
   aiStep(dt);
   carContacts(dt);
+  if (racing && S.mp) mpReconcile(dt);
 
   if (racing) {
     raceT = S.mp && NET.state ? Math.max(0, mpNow() - NET.state.raceAt) : raceT + dt; P.time = S.mp && NET.state ? Math.max(0, NET.state.deadline - mpNow()) : P.time - dt;
-    const lapNow = Math.floor(P.dist / L);
+    const officialLap = S.mp && NET.r && NET.r.authoritative && NET.r.authoritative();
+    const lapNow = officialLap ? officialLap.p[5] : Math.floor(P.dist / L);
     if (!P.finished && lapNow > P.lapsDone) {
       P.lapsDone = lapNow;
       const lt = raceT - P.lapStart;
@@ -3460,7 +3434,7 @@ function mmDraw(m) {
   hx.fillText(MM_ITEMS[m.sel].desc, 111, 406);
 }
 /* ===== MULTIPLAYER: salas de hasta 8 jugadores usando nuestro servidor WebSocket. ===== */
-const NET = { sawHost: false, noHost: 0, r: null, code: '', name: '', t: 'auto', host: false, busy: false, subs: [], rid: 0, lastSend: 0, peerId: '', state: null, clockOffset: 0, pingMs: null, cpu: false };
+const NET = { sawHost: false, noHost: 0, r: null, code: '', name: '', t: 'auto', host: false, busy: false, subs: [], rid: 0, lastSend: 0, inputSeq: 0, lastHit: 0, lastWall: 0, peerId: '', state: null, clockOffset: 0, pingMs: null, cpu: false };
 const mpNow = () => Date.now() / 1000 + (NET.clockOffset || 0);
 const mpReadyToStart = () => { if (!NET.state || NET.state.phase !== 'lobby') return false; const pl = mpPlayers(); return pl.length >= 2 && pl.every(p => p.peer === (NET.state && NET.state.host) || !!(NET.state && NET.state.ready && NET.state.ready[p.peer])); };
 const mpSendCommand = (name, value) => { try { if (NET.r) NET.r.command(name, value); } catch (e) { console.warn(e); } };
@@ -3491,19 +3465,30 @@ function mpSeat(peerId) {
 }
 function mpStandings() {
   if (!S.mp) return [];
-  const people = [{ seat: S.mySeat || mpSeat(mpMyPeer()), nick: NET.name || 'Piloto',
+  const people = [{ peer: mpMyPeer(), seat: S.mySeat || mpSeat(mpMyPeer()), nick: NET.name || 'Piloto',
     dist: P.dist, finished: !!P.finished, mine: true }];
   for (const c of cars) {
     if (!c.remote || c.unused) continue;
-    people.push({ seat: c.seat || mpSeat(c.remote), nick: c.pname || 'Piloto',
+    people.push({ peer: c.remote, seat: c.seat || mpSeat(c.remote), nick: c.pname || 'Piloto',
       dist: c.dist, finished: !!c.fin, mine: false });
   }
   const outcome = NET.state && NET.state.results;
   if (outcome && Object.keys(outcome).length) {
-    people.forEach(p => { p.finalRank = outcome[p.mine ? mpMyPeer() :
-      (cars.find(c => c.remote && c.seat === p.seat) || {}).remote] || 999; });
+    people.forEach(p => { p.finalRank = outcome[p.peer] || 999; });
     people.sort((a, b) => a.finalRank - b.finalRank);
-  } else people.sort((a, b) => (b.finished ? 1 : 0) - (a.finished ? 1 : 0) || b.dist - a.dist || a.seat - b.seat);
+  } else {
+    // Todos los pilotos reciben la MISMA clasificación oficial del servidor.
+    // La distancia dibujada del rival está atrasada para interpolación visual
+    // y NO sirve para determinar quién va primero.
+    const official = NET.r && NET.r.ranking ? NET.r.ranking() : null;
+    if (official && NET.state && official.rid === NET.state.rid && official.order.length) {
+      const order = new Map(official.order.map((peer, index) => [peer, index]));
+      people.sort((a, b) => (order.has(a.peer) ? order.get(a.peer) : 999) -
+        (order.has(b.peer) ? order.get(b.peer) : 999) || a.seat - b.seat);
+    } else {
+      people.sort((a, b) => (b.finished ? 1 : 0) - (a.finished ? 1 : 0) || b.dist - a.dist || a.seat - b.seat);
+    }
+  }
   return people;
 }
 function mpHostPeer() { return mpPlayers().find(p => p.presence.h) || null; }
@@ -3519,7 +3504,7 @@ async function mpEnter(joinCode) {
     const room = await netReady();
     if (!room) { mpStatus('No hay conexión multijugador. Abrí el juego desde la URL del servidor, no como archivo HTML.'); return; }
     const r = await room.join('cab-' + code);
-    NET.r = r; NET.code = code; NET.name = nm; NET.host = !joinCode; NET.t = S.trans; NET.peerId = ''; NET.sawHost = !joinCode; NET.noHost = 0; NET.state = r.state(); NET.rid = (NET.state && NET.state.rid) || 0; NET.pingMs = null;
+    NET.r = r; NET.code = code; NET.name = nm; NET.host = !joinCode; NET.t = S.trans; NET.peerId = ''; NET.sawHost = !joinCode; NET.noHost = 0; NET.state = r.state(); NET.rid = (NET.state && NET.state.rid) || 0; NET.pingMs = null; NET.inputSeq = 0; NET.lastHit = 0; NET.lastWall = 0;
     NET.clockOffset = NET.state && Number.isFinite(NET.state.serverNow) ? NET.state.serverNow - Date.now() / 1000 : 0;
     NET.subs.push(r.onPeers(mpOnPeers, () => mpLost()));
     await r.presence({ n: nm, t: NET.t, c: S.course | 0 });
@@ -3531,7 +3516,7 @@ async function mpEnter(joinCode) {
   } catch (e) { await mpDrop(); mpStatus('No se pudo conectar (' + ((e && (e.code || e.message)) || 'error') + ').'); }
   finally { NET.busy = false; }
 }
-async function mpDrop() { const r = NET.r; NET.r = null; NET.subs.forEach(u => { try { u(); } catch (e) { } }); NET.subs = []; S.mp = false; S.mySeat = 0; NET.state = null; NET.pingMs = null; NET.clockOffset = 0; repaintPlayer(S.trans); if (r) { try { await r.leave(); } catch (e) { } } }
+async function mpDrop() { const r = NET.r; NET.r = null; NET.subs.forEach(u => { try { u(); } catch (e) { } }); NET.subs = []; S.mp = false; S.mySeat = 0; NET.state = null; NET.pingMs = null; NET.clockOffset = 0; NET.lastHit = 0; NET.lastWall = 0; repaintPlayer(S.trans); if (r) { try { await r.leave(); } catch (e) { } } }
 function mpLost() { if (S.mp) { mpLeave(true); } }
 function mpOpenLobby() { voiceStop(); S.sel = true; S.lb = { t: 0, msg: '', msgT: 0, hit: [] }; beep(660, 0.08, 'square', 0.05); setTimeout(() => beep(990, 0.1, 'square', 0.05), 90); }
 async function mpLeave(lost) {
@@ -3621,6 +3606,7 @@ function mpStart() {
 const mpGrid = k => { const right = k % 2; return { d: right ? 3.75 : -10.9, dist: 24 - Math.floor(k / 2) * 18 + (right ? 6 : 0) }; };
 function startRaceMP(ord) {
   const me = mpMyPeer(), myK = Math.max(0, ord.indexOf(me)), info = {};
+  NET.inputSeq = 0; NET.lastSend = 0; NET.lastHit = 0; NET.lastWall = 0;
   mpPlayers().forEach(p => { info[p.peer] = p.presence; });
   initAudio(); musicStop(); selMusicStop();
   S.sel = false; S.mm = null; S.cs = null; S.ms = null; S.gs = null; S.lb = null; mpEntryClose();
@@ -3670,11 +3656,13 @@ function mpBackToLobby() {
   mpPub({ p: null });
 }
 function aiStep(dt) { if (S.mp) mpUpdateRemotes(dt); else updateAI(dt, P); }
-// Retrasamos una fracción de segundo la imagen del rival para interpolar
-// dos snapshots reales. Para las colisiones usamos su pose estimada actual.
-const MP_RENDER_DELAY = 0.12;
+// Interpolación visual más cercana al presente: reduce la sensación de
+// adelantamientos contradictorios sin mezclar la clasificación oficial
+// (servidor) con el modelo 3D dibujado en cada navegador.
+const MP_RENDER_DELAY = 0.075;
 const mpPredict = (p, elapsed) => ({
-  dist: p[0] + p[2] * Math.cos(p[3]) * elapsed,
+  dist: p[0] + p[2] * Math.cos(p[3]) * elapsed /
+    Math.max(0.3, 1 + frameAt(p[0]).k * p[1]),
   d: p[1] + p[2] * Math.sin(p[3]) * elapsed,
   v: p[2], psi: p[3], phi: p[4], fin: p[6]
 });
@@ -3763,12 +3751,75 @@ function mpUpdateRemotes(dt) {
     }
   }
 }
+// v32: al servidor se envían CONTROLES, nunca posiciones.
+// Predicción local: el #41 reacciona en cada cuadro, el servidor simula
+// a 60 Hz y devuelve la pose única de todos los autos.
 function mpSend() {
-  if (!NET.r || !S.mp || S.mode === 'menu') return;
-  const t = performance.now(); if (t - NET.lastSend < 45) return; NET.lastSend = t;
-  const q = x => Math.round(x * 100) / 100;
-  NET.r.presence({ p: [q(P.dist), q(P.d), Math.round(P.v * 10) / 10, Math.round(P.psi * 1000) / 1000, Math.round(P.phi * 1000) / 1000, P.lapsDone | 0, P.finished ? 1 : 0, P.tumble > 0 ? 1 : 0] }).catch(() => { });
+  if (!NET.r || !S.mp || S.mode !== 'race' || !NET.state || NET.state.phase !== 'race') return;
+  const now = performance.now();
+  if (now - NET.lastSend < 32) return; // ~30 Hz de inputs
+  NET.lastSend = now;
+  const inp = readInput();
+  try { NET.r.input({ rid: NET.state.rid, seq: ++NET.inputSeq,
+    gas: !!inp.gas, brake: !!inp.brake, steer: clamp(inp.steer, -1, 1), gear: P.gear | 0 }); }
+  catch (e) { if (!mpSend.warn) { mpSend.warn = true; console.warn('Input online', e); } }
 }
+function mpReconcile(dt) {
+  if (!S.mp || S.mode !== 'race' || !NET.r || !NET.r.authoritative) return;
+  const auth = NET.r.authoritative();
+  if (!auth || !NET.state || auth.p.length < 12) return;
+  const p = auth.p;
+  const age = clamp(mpNow() - auth.serverNow, 0, 0.18);
+  // Ligeramente adelantar el snapshot para compensar la latencia de la red;
+  // el auto local sigue usando la física original en cada cuadro.
+  const targetDist = p[0] + p[2] * Math.cos(p[3]) * age /
+    Math.max(0.3, 1 + frameAt(p[0]).k * p[1]);
+  const targetD = clamp(p[1] + p[2] * Math.sin(p[3]) * age, -WALL + CAR_WD/2, WALL - CAR_WD/2);
+  const gap = targetDist - P.dist, lateral = targetD - P.d;
+  // Errores muy grandes (volver de pestaña suspendida / choque) se corrigen
+  // enseguida; los pequeños no producen teletransportes visibles.
+  if (Math.abs(gap) > 12 || Math.abs(lateral) > 5) {
+    P.dist = targetDist; P.d = targetD; P.v = p[2]; P.psi = p[3]; P.phi = p[4];
+  } else {
+    const factor = 1 - Math.exp(-dt * (Math.abs(gap) > 2.5 ? 15 : 7.5));
+    P.dist += gap * factor;
+    P.d += lateral * factor;
+    P.v += (p[2] - P.v) * Math.min(1, dt * 5);
+    P.psi += (p[3] - P.psi) * Math.min(1, dt * 3);
+    P.phi += (p[4] - P.phi) * Math.min(1, dt * 3);
+  }
+  if (p[10] > NET.lastHit) {
+    // Un mismo contacto confirmado por servidor se muestra una sola vez.
+    const fresh = NET.lastHit > 0 || p[10] === 1;
+    NET.lastHit = p[10];
+    if (fresh && !(P.sideCD > 0)) { P.crash = Math.max(P.crash, .16); P.sideCD = .27; thump(.36); beep(155, .09, 'square', .05); }
+    // p[11] marca un contacto con otro auto; NO es daño de capó.
+  }
+  // Solo la pared puede abollar el capó. El servidor confirma muros por separado
+  // de los choques entre autos, para no depender de la predicción local.
+  if (p.length >= 14 && p[12] > NET.lastWall) {
+    NET.lastWall = p[12];
+    const mask = p[13] | 0;
+    const corners = [];
+    if (mask & 1) corners.push('fl');
+    if (mask & 2) corners.push('fr');
+    if (corners.length) registerHit(corners, 1);
+  }
+  if (p[6] && !P.finished) {
+    // El último cruce lo confirma la simulación oficial. Conservar el
+    // conteo de vueltas para que la cinematográfica muestre GOAL y no TIME OVER.
+    if (P.lapsDone < LAPS) {
+      const lt = Math.max(0, raceT - P.lapStart);
+      if (lt > 0) { P.lapTimes.push(lt); P.bestLap = Math.min(P.bestLap, lt); }
+      P.lapStart = raceT;
+    }
+    P.lapsDone = LAPS;
+    P.finished = true; P.finAt = auth.serverNow;
+    if (NET.firstFin == null) NET.firstFin = auth.serverNow;
+    beep(880, .15); setTimeout(() => beep(1320, .3), 160);
+  }
+}
+
 const mpFinPlace = () => mpStandings().findIndex(p => p.mine) + 1;
 const mpTotal = () => S.mp ? (NET.state && NET.state.ord.length || mpPlayers().length) : cars.length + 1;
 /* --- Lobby (estilo Daytona USA) --- */
@@ -4683,9 +4734,9 @@ function updateDamageMesh() {
   // El golpe se aplica de una vez, NO progresivamente.
   const bent = P.damage > 0 ? 1 : 0;
   const m = playerMesh.damageModel, side = P.damageSide || 1;
-  // Solo se abolla el capó si el golpe afecta el FRENTE (o hay un vuelco).
-  // Chocar de atrás no modifica ninguna parte trasera ni activa el capó.
-  setHoodImpact(m.hoodDamage, !!(P.dmg.fl || bent), !!(P.dmg.fr || bent));
+  // El capó se abolla EXCLUSIVAMENTE al golpear una pared con la esquina delantera.
+  // Ni autos, ni CPU, ni vuelcos, ni la animación de daño general lo deforman.
+  setHoodImpact(m.hoodDamage, !!P.dmg.fl, !!P.dmg.fr);
   m.cab.scale.set(1, 1, 1);
   const rx = -0.025 * bent, rz = side * 0.115 * bent, py = 1.0;
   m.cab.rotation.set(rx, 0, rz);
