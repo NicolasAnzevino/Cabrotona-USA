@@ -469,12 +469,13 @@ const LIV = [
   ['#2b2d42', '#e63946', '#ffd23f'], ['#1d3557', '#f4f7fb', '#e63946'], ['#c1121f', '#14161c', '#f4f7fb'], ['#00a6d6', '#f4f7fb', '#14161c'],
   ['#ff7b00', '#14161c', '#f4f7fb'], ['#3a5a40', '#f4f7fb', '#ffd23f'], ['#7b2cbf', '#ffd23f', '#f4f7fb'], ['#d90368', '#f4f7fb', '#14161c'],
   ['#0b6e4f', '#ffd23f', '#f4f7fb'], ['#9d0208', '#f4f7fb', '#ffd23f'], ['#118ab2', '#ffd166', '#14161c']];
-const NUMS = ['03', '07', '12', '17', '21', '24', '27', '33', '38', '44', '48', '52', '57', '66', '71', '77', '83', '88', '94'];
-const SPONS = ['TURBO', 'ZETA', 'RUTA 500', 'PISTÓN', 'NORTE', 'ARENA', 'VOLT', 'NITRO', 'ÁGUILA', 'DELTA', 'COBRA', 'ÓRBITA', 'LÍNEA ROJA', 'TRUENO', 'MAGMA', 'KODIAK', 'SÓNICO', 'ÁMBAR', 'FÉNIX'];
+const NUMS = ['3', '7', '12', '17', '21', '24', '27', '33', '38', '44', '48', '52', '57', '66', '71', '77', '83', '88', '94'];
+const SPONS = ['TURBO', 'ZETA', 'ROUTE 500', 'PISTON', 'NORTH', 'ARENA', 'VOLT', 'NITRO', 'EAGLE', 'DELTA', 'COBRA', 'ORBIT', 'RED LINE', 'THUNDER', 'MAGMA', 'KODIAK', 'SONIC', 'AMBER', 'PHOENIX'];
+const TAGS = ['RACING', 'SPEEDWAY', 'MOTOR CLUB', 'FULL BOOST', 'ROAD KING', 'THUNDER RUN', 'SUPER STOCK', 'FAST LANE', 'POLE STAR', 'NITRO TEAM', 'POWER LINE', 'OVERTAKE'];
 const PLAYER_DEF = { color: PBLUE, sec: '#e1252b', accent: '#16c878', text: '#ffe12a', num: '41', spons: 'GALLOP', tag: 'HORNET', isPlayer: true };
 
 function resetPlayer() {
-  Object.assign(P, { dist: 0, d: 3, phi: 0, psi: 0, v: 0, steer: 0, gear: 0, shiftT: 0, lapsDone: 0, lapStart: 0, lapTimes: [], time: START_TIME, bestLap: Infinity, damage: 0, damageCD: 0, damageSide: 1, damagePulse: 0, crash: 0, tumble: 0, flip: 0, inv: 0, wallT: 0, sv: 0, braking: false, rpm: 0, thr: 0, place: 0, finished: false, acc: 0 });
+  Object.assign(P, { dist: 0, d: 3, phi: 0, psi: 0, v: 0, steer: 0, gear: 0, shiftT: 0, lapsDone: 0, lapStart: 0, lapTimes: [], time: START_TIME, bestLap: Infinity, dmg: { fl: 0, fr: 0, rl: 0, rr: 0 }, hitCD: 0, recoil: 0, recoilT: 0, damage: 0, damageCD: 0, damageSide: 1, damagePulse: 0, crash: 0, tumble: 0, flip: 0, inv: 0, wallT: 0, sv: 0, braking: false, rpm: 0, thr: 0, place: 0, finished: false, acc: 0 });
 }
 function makeCars() {
   cars = [];
@@ -490,7 +491,8 @@ function makeCars() {
       v: 0, phi: 0, psi: 0, run: false, fin: 0,
       base: (0.78 + 0.2 * (i / (NCARS - 1)) + (r - 0.5) * 0.03) * MAXV,
       color: lv[0], sec: lv[1], accent: lv[2],
-      num: NUMS[(i * 5) % NUMS.length], spons: SPONS[(i * 7) % SPONS.length], ddt: 0
+      num: NUMS[(i * 5) % NUMS.length], spons: SPONS[(i * 7) % SPONS.length], tag: TAGS[(i * 3) % TAGS.length], ddt: 0,
+      skill: 0.965 + Math.random() * 0.07, err: 0.35 + Math.random() * 1.5, mistakeT: 25 + Math.random() * 300, brakeCD: 30 + Math.random() * 300, brakeT: 0, mistake: 0, safe: 0, tumble: 0, sv: 0
     });
   }
 }
@@ -665,9 +667,9 @@ function setMuted(m) {
    SIMULACIÓN
    --------------------------------------------------------------------- */
 function registerDamage(strength, side) {
-  // Persistente hasta reiniciar. Los golpes fuertes abollan el coche, los roces lo marcan.
+  // Estado binario: el daño visual se activa de golpe y NO escala con colisiones posteriores.
   if (S.mode !== 'race' || P.damageCD > 0) return;
-  P.damage = clamp(P.damage + strength, 0, 1);
+  if (strength > 0) P.damage = 1;
   P.damageSide = side || P.damageSide || 1;
   P.damagePulse = 0.7;
   P.damageCD = 0.72;
@@ -677,6 +679,38 @@ function registerDamage(strength, side) {
       spawnPart(b[0] + (Math.random()-.5)*2, b[1]+.65, b[2] - b[9]*2.5, i%2===0);
     }
   }
+}
+/* ---------------------------------------------------------------------
+   Daño localizado, estilo arcade Daytona USA: un estado fijo por esquina.
+   Un solo golpe deforma la esquina instantáneamente: NO hay niveles, transición
+   ni acumulación, y los siguientes golpes nunca agrandan el mismo pliegue.
+   --------------------------------------------------------------------- */
+function registerHit(keys, lvl) {
+  if (S.mode !== 'race' || !(lvl > 0)) return;
+  for (const k of keys) P.dmg[k] = 1;
+}
+// Esquina que toca primero el muro: la que más se adelanta lateralmente según la orientación real del auto (phi).
+function wallCorner(sgn, phi) {
+  const s = Math.sin(phi), c = Math.cos(phi), hw = 0.95, hl = 2.45;
+  const lat = { fr: hw * c + hl * s, fl: -hw * c + hl * s, rr: hw * c - hl * s, rl: -hw * c - hl * s };   // + = derecha de la pista
+  let best = 'fr', bv = -1e9;
+  for (const k in lat) { const v = lat[k] * sgn + (k[0] === 'f' ? 0.08 : 0); if (v > bv) { bv = v; best = k; } }
+  const out = [best], partner = best[0] + (best[1] === 'r' ? 'l' : 'r');
+  if (lat[partner] * sgn + (partner[0] === 'f' ? 0.08 : 0) >= bv - 0.25) out.push(partner);   // de frente contra el muro: las dos esquinas
+  return out;
+}
+function lineRegions(end, off) {   // end: 'f' (frente) o 'r' (trasera); off: lateral del otro auto respecto del nuestro (+ = a la derecha)
+  return off > 0.45 ? [end + 'r'] : off < -0.45 ? [end + 'l'] : [end + 'l', end + 'r'];
+}
+function wallHit(into, sgn) {
+  if (P.hitCD > 0) return;
+  P.hitCD = 0.5;
+  registerHit(wallCorner(sgn, P.phi), into > 9 ? 1 : 0.55);
+  P.v = Math.max(0, P.v * (1 - clamp(into * 0.022, 0.1, 0.5)));    // el golpe frena el auto
+  P.sv = -sgn * clamp(into * 0.45, 1.8, 6);                         // rebota apenas hacia afuera del muro
+  P.recoil = clamp(into * 0.75, 3, 11); P.recoilT = 0.22;          // y se va un toque hacia atrás (sin trompo)
+  thump(clamp(0.3 + into * 0.03, 0.3, 0.75)); beep(130, 0.12, 'square', 0.09);
+  if (playerMesh) { const b = playerMesh.b; for (let i = 0; i < 4; i++) spawnPart(b[0] + b[9] * 2.2 - b[3] * sgn, b[1] + 0.5 + b[10] * 2.2 - b[4] * sgn, b[2] + b[11] * 2.2 - b[5] * sgn, true); }
 }
 function tumbleStart(st, kind) {
   st.kind = kind; st.spinDir = Math.sign(st.steer || (Math.random() - 0.5)) || 1;
@@ -700,6 +734,7 @@ function stepPlayer(dt, inp) {
   if (P.crash > 0) P.crash -= dt;
   if (P.damageCD > 0) P.damageCD = Math.max(0, P.damageCD - dt);
   if (P.damagePulse > 0) P.damagePulse = Math.max(0, P.damagePulse - dt);
+  if (P.hitCD > 0) P.hitCD -= dt;
   if (P.wallT > 0) P.wallT -= dt;
   if (P.sideCD > 0) P.sideCD -= dt;
   if (P.shoveT > 0) P.shoveT -= dt;
@@ -774,6 +809,7 @@ function stepPlayer(dt, inp) {
   P.acc = acc;
   P.v = clamp(P.v + acc * dt, 0, MAXV * 1.12 * ST.vK);
   advance(P, dt);
+  if (P.recoilT > 0) { P.recoilT -= dt; P.dist -= P.recoil * dt; }   // retroceso del golpe
   if (P.sv) P.d += P.sv * dt;
 
   /* muros: vuelca solo con un golpe muy fuerte a mucha velocidad */
@@ -785,11 +821,10 @@ function stepPlayer(dt, inp) {
       P.v = Math.max(0, P.v - into * 0.55 - P.v * 0.03);
       P.psi = -P.psi * 0.15; P.phi = P.psi + (P.phi - P.psi) * 0.4; P.steer *= 0.5; P.wallT = 0.35;
       if (into > 6) { P.crash = Math.max(P.crash, 0.35); thump(0.6); }
+      if (into > 3.2) wallHit(into, sgn);
       if (P.inv <= 0) {
         if (into > 30 && vHit > 60) tumbleStart(P, 'flip');
         else if (P.shoveT > 0 && into > 8 && vHit > 68) tumbleStart(P, 'flip');   // si otro auto te lleva contra el muro a toda velocidad, te rompés
-        else if (P.shoveT > 0 && into > 5.5 && vHit > 60) tumbleStart(P, 'spin');   // si otro auto te lleva contra el muro a toda velocidad, se rompe
-        else if (into > 17 || (P.shoveT > 0 && into > 11 && vHit > 50)) tumbleStart(P, 'spin');
       }
     } else { P.v *= 1 - 0.8 * dt; P.wallT = 0.15; }
   }
@@ -800,8 +835,11 @@ function stepPlayer(dt, inp) {
 function updateAI(dt, ref) {
   for (const c of cars) {
     if (!c.run) { c.v = 0; continue; }
+    const crashSim = !S.mp && (S.mode === 'race' || S.mode === 'finish');
+    if (c.safe > 0) c.safe -= dt;
+    if (c.tumble > 0) { npcTumble(c, dt); continue; }
     const fr = frameAt(c.dist), k = fr.k;
-    let vt = Math.min(c.base, Math.sqrt(26 / Math.max(Math.abs(k), 1e-4)) * 0.97);
+    let vt = Math.min(c.base * (crashSim ? (c.skill || 1) : 1), Math.sqrt(26 / Math.max(Math.abs(k), 1e-4)) * 0.97);
     vt *= 1 + clamp((ref.dist - c.dist) / (L * 0.5), -0.07, 0.07);
     if (S.mode === 'countdown') vt = PACE;
     let target = c.lane, blocker = null, bg = 1e9, pT;
@@ -833,6 +871,16 @@ function updateAI(dt, ref) {
       const g = cdiff(o.dist - c.dist);
       if (g > 0 && g < (c.evOn ? 90 : 60) && Math.abs(o.d - c.lane) < (c.evOn ? 4.2 : 3.2)) { laneBlocked = true; break; }
     }
+    if (S.mode === 'race' && !S.mp && raceT > 8) {
+      // Errores: cada auto, de vez en cuando, se pasa de frenada o se cierra y se va hacia un costado. Varía en cada partida.
+      if (c.mistake > 0) { c.mistake -= dt; vt *= 1.04; }
+      else { c.mistakeT -= dt * (c.err || 1); if (c.mistakeT <= 0) { c.mistake = 0.9; c.mDir = Math.random() < 0.5 ? -1 : 1; c.mistakeT = 150 + Math.random() * 300; c.sv = c.mDir * 9; c.shoveT = 1.2; } }
+    }
+    if (S.mode === 'race' && !S.mp && raceT > 8) {
+      // Frenada brusca en una curva: el auto de atrás (el jugador, por ejemplo) se la come si viene rápido.
+      if (c.brakeT > 0) { c.brakeT -= dt; vt = Math.min(vt, c.base * 0.4); }
+      else { c.brakeCD -= dt * (c.err || 1); if (c.brakeCD <= 0 && Math.abs(k) > 0.0035) { c.brakeT = 1.6 + Math.random() * 1.2; c.brakeCD = 120 + Math.random() * 240; } }
+    }
     if (c.evT > 0) c.evT -= dt;
     if (blocker || laneBlocked || c.evT > 0) {
       if (!c.evOn) {
@@ -851,13 +899,31 @@ function updateAI(dt, ref) {
     const wantLv = clamp((target - c.d) * 1.6, -3.6, 3.6);
     c.lv = (c.lv || 0) + (wantLv - (c.lv || 0)) * Math.min(1, dt * 2.5);
     const dd = c.lv * dt;
-    c.d += dd; c.ddt = c.lv;
+    c.d += dd + (c.sv || 0) * dt; c.ddt = c.lv;
+    if (c.sv) { c.sv *= Math.exp(-4 * dt); if (Math.abs(c.sv) < 0.05) c.sv = 0; }
+    if (c.shoveT > 0) c.shoveT -= dt;
+    if (crashSim) {
+      const lim = WALL - CAR_WD / 2;
+      if (Math.abs(c.d) > lim) {
+        const sgn = Math.sign(c.d), vHit = c.v, into = Math.max(0, (c.sv || 0) * sgn + (c.lv || 0) * sgn);
+        c.d = sgn * lim; c.sv = 0; c.lv = 0; c.lane = sgn * 11;
+        if (into > 0) {
+          c.v = Math.max(0, c.v - into * 0.55);
+          if (c.safe <= 0) {
+            if (into > 7.5 && vHit > 48) npcCrash(c, 'flip');       // empujado (o pasado de largo) contra el muro a mucha velocidad: vuelca
+            else if (into > 4.2 && vHit > 35) npcCrash(c, 'spin');
+          }
+        }
+        if (c.tumble > 0) continue;
+      }
+    }
     c.psi = Math.atan2(c.ddt, Math.max(c.v, 1)); c.phi = c.psi * 0.8;
     c.dist += c.v * Math.cos(c.psi) * dt / Math.max(0.3, 1 + k * c.d);
     if (!c.fin && c.dist >= LAPS * L) c.fin = ++finCount;
   }
   // Separación dura entre autos: nunca se superponen (dos autos en el mismo lugar se veían titilar por z-fighting).
-  for (const c of cars) {
+  if (!S.mp && (S.mode === 'race' || S.mode === 'finish')) npcCollide(dt);
+  else for (const c of cars) {
     for (const o of cars) {
       if (o === c) continue;
       const g = cdiff(o.dist - c.dist);
@@ -868,6 +934,60 @@ function updateAI(dt, ref) {
       if (Math.abs(g) < CAR_L * 1.3 && Math.abs(P.d - c.d) < CAR_WD * 1.5) {
         c.d += (c.d >= P.d ? 1 : -1) * 0.35;
         if (g > 0) { c.dist = P.dist - CAR_L * 1.3; c.v = Math.min(c.v, P.v - 1); } else { c.dist = P.dist + CAR_L * 1.3; c.v = Math.max(c.v, P.v + 1); }
+      }
+    }
+  }
+}
+/* ---- NPC: choques entre ellos, vuelcos y trompos (como el auto principal) ---- */
+function npcCrash(c, kind) {
+  if (c.tumble > 0) return;
+  c.kind = kind; c.tumble = kind === 'flip' ? 2.3 : 0.95; c.flip = 0; c.spinDir = Math.random() < 0.5 ? -1 : 1; c.safe = 99; c.mistake = 0;
+  const gp = Math.abs(cdiff(c.dist - P.dist));
+  if (gp < 100 && S.mode !== 'menu') {
+    thump(clamp((kind === 'flip' ? 0.7 : 0.45) - gp / 220, 0.1, 0.7));
+    if (gp < 70) { const f = frameAt(c.dist); for (let i = 0; i < (kind === 'flip' ? 8 : 4); i++) spawnPart(f.cx + f.rx * c.d + (Math.random() - .5) * 2, f.cy + f.ry * c.d + 0.8, f.cz + f.rz * c.d + (Math.random() - .5) * 2, i % 2 === 0); }
+  }
+}
+function npcTumble(c, dt) {
+  const k = frameAt(c.dist).k, flip = c.kind === 'flip';
+  c.tumble -= dt;
+  c.v *= Math.exp(-(flip ? 1.7 : 2.4) * dt);
+  if (flip) c.flip += dt * 8;
+  c.phi += dt * (flip ? 6 : 7) * c.spinDir;
+  c.psi += (0 - c.psi) * dt * 1.5;
+  c.d += (c.sv || 0) * dt; c.sv = (c.sv || 0) * Math.exp(-3 * dt);
+  c.d = clamp(c.d, -(WALL - 1.1), WALL - 1.1);
+  c.dist += c.v * dt / Math.max(0.3, 1 + k * c.d);
+  if (!c.fin && c.dist >= LAPS * L) c.fin = ++finCount;
+  if (c.tumble <= 0) {
+    c.d = clamp(c.d, -9, 9); c.lane = c.d; c.phi = 0; c.psi = 0; c.flip = 0; c.lv = 0; c.sv = 0;
+    c.v = Math.max(c.v, flip ? 16 : 24); c.safe = 2.5; c.evOn = false;
+  }
+}
+function npcCollide(dt) {
+  for (let i = 0; i < cars.length; i++) {
+    const a = cars[i]; if (!a.run || a.unused) continue;
+    for (let j = i + 1; j < cars.length; j++) {
+      const b = cars[j]; if (!b.run || b.unused) continue;
+      const g = cdiff(b.dist - a.dist), dd = b.d - a.d, ag = Math.abs(g), ad = Math.abs(dd);
+      if (ag >= CAR_L || ad >= CAR_WD) continue;
+      const pg = (CAR_L - ag) / CAR_L, pd = (CAR_WD - ad) / CAR_WD;
+      if (pg <= pd) {
+        // en línea: el de atrás pierde velocidad, el de adelante recibe el impulso
+        const rear = g > 0 ? a : b, front = g > 0 ? b : a, rel = rear.v - front.v;
+        rear.dist = front.dist - CAR_L * 1.02;
+        if (rel > 0.2) {
+          rear.v = Math.max(0, rear.v - rel * 0.5); front.v += rel * 0.5 + 0.8;
+          if (front.brakeT > 0 && rel > 14 && rear.safe <= 0 && rear.tumble <= 0) npcCrash(rear, 'spin');   // le pegó a uno que frenó: trompea el que pegó
+          else if (rel > 30 && front.safe <= 0 && front.tumble <= 0) npcCrash(front, 'spin');
+          if (rel > 42 && !(front.brakeT > 0) && rear.safe <= 0 && rear.tumble <= 0) npcCrash(rear, 'flip');
+        }
+      } else {
+        // roce de costado: se separan y se empujan; contra el muro pueden volcar
+        const sg = Math.sign(dd) || (Math.random() < 0.5 ? 1 : -1), over = CAR_WD - ad + 0.03;
+        a.d -= sg * over * 0.5; b.d += sg * over * 0.5;
+        a.sv = (a.sv || 0) - sg * 3.2; b.sv = (b.sv || 0) + sg * 3.2; a.shoveT = b.shoveT = 1;
+        a.v *= 1 - 0.25 * dt; b.v *= 1 - 0.25 * dt;
       }
     }
   }
@@ -947,6 +1067,37 @@ function carContacts(dt) {
     if (!c.run || c.unused) continue;
     if (S.mp && c.cpu) { cpuContact(c, dt); continue; }
     if (P.inv > 0) continue;
+    if (S.mp && c.remote) {
+      // En multijugador cada navegador es dueño de su auto. Nunca modificar
+      // c.dist/c.d/c.v: el siguiente snapshot desharía el cambio y teletransportaría al rival.
+      if (c.netAge == null || c.netAge > 0.45 || !Number.isFinite(c.netHitDist)) continue;
+      const g = cdiff(c.netHitDist - P.dist), dd = c.netHitD - P.d;
+      const nearDist = P.dist + g; // misma vuelta LOCAL, aunque el rival esté una vuelta detrás
+      if (Math.abs(g) >= CAR_L || Math.abs(dd) >= CAR_WD) continue;
+      const pg = (CAR_L - Math.abs(g)) / CAR_L, pd = (CAR_WD - Math.abs(dd)) / CAR_WD;
+      if (pg <= pd) {
+        if (g > 0) {
+          const rel = P.v - c.v;
+          P.dist = Math.min(P.dist, nearDist - CAR_L - 0.03);
+          if (rel > 0) {
+            if (rel > 9) registerHit(lineRegions('f', dd), 1);
+            P.v = Math.max(0, Math.min(P.v, c.v + Math.max(0, rel) * 0.45));
+          }
+        } else {
+          P.dist = Math.max(P.dist, nearDist + CAR_L + 0.03);
+          P.v = Math.min(MAXV * 1.2, Math.max(P.v, c.v * 0.96));
+        }
+      } else {
+        const side = Math.sign(P.d - c.netHitD) || 1;
+        P.d = clamp(c.netHitD + side * (CAR_WD + 0.03), -WALL + CAR_WD / 2, WALL - CAR_WD / 2);
+        P.sv = side * Math.min(6, Math.max(1, Math.abs(P.sv || 0)));
+        P.v *= 1 - Math.min(0.16, dt * 4);
+        P.shoveT = Math.max(P.shoveT || 0, 0.25);
+      }
+      P.crash = Math.max(P.crash, 0.12);
+      if (!(P.sideCD > 0)) { P.sideCD = 0.25; thump(0.3); beep(165, 0.08, 'square', 0.05); }
+      continue;
+    }
     const g = cdiff(c.dist - P.dist), dd = c.d - P.d, ag = Math.abs(g), ad = Math.abs(dd);
     if (ag >= CAR_L || ad >= CAR_WD) continue;
     const pg = (CAR_L - ag) / CAR_L, pd = (CAR_WD - ad) / CAR_WD;
@@ -956,8 +1107,11 @@ function carContacts(dt) {
       const over = CAR_L - ag + 0.03, away = Math.sign(P.d - c.d) || (Math.random() < 0.5 ? 1 : -1);
       if (rearIsP) { P.dist -= over * 0.1; c.dist += over * 0.9; } else { P.dist += over * 0.7; c.dist -= over * 0.3; }
       if (rel > 0.2) {
+        // Impacto real contra otro auto por delante: marca el capó, una sola vez.
+        // Si otro auto nos golpea por atrás, la carrocería trasera queda intacta.
+        if (rearIsP && rel > 9) registerHit(lineRegions('f', dd), 1);
         const j = rel * (1 + CONTACT_E) / 2, boost = 1.2 + rel * 0.12, vHit = vR;
-        if (rearIsP) { P.v = Math.max(0, P.v - rel * 0.45); c.v += rel * 0.55 + boost; }   // le pegás por atrás: te frena (choque inelástico), sin rebote
+        if (rearIsP) { P.v = Math.max(0, P.v - rel * 0.45); c.v += rel * 0.55 + boost; if (!S.mp && c.brakeT > 0 && rel > 15 && P.tumble <= 0) { tumbleStart(P, 'spin'); P.sv = 0; } else if (!S.mp && c.safe <= 0 && c.tumble <= 0 && rel > 30) npcCrash(c, rel > 46 ? 'flip' : 'spin'); }   // le pegás por atrás: te frena (choque inelástico), sin rebote
         else { P.v = Math.min(MAXV * 1.2, P.v + j + boost + 2); c.v = Math.max(0, c.v - j); }
         // si te pegan por atrás: solo te impulsan hacia adelante (sin trompo ni desvío)
         if (!rearIsP) P.crash = Math.max(P.crash, Math.min(0.5, 0.2 + rel * 0.012));
@@ -970,6 +1124,7 @@ function carContacts(dt) {
       if (cAppr <= pAppr + 0.3) {
         /* te tirás vos contra el otro: lo empujás vos, sin rebote para tu auto */
         c.d -= sg * over; c.lv = (c.lv || 0) - sg * Math.min(5, 1.5 + pAppr * 0.8);
+        if (!S.mp) { c.sv = -sg * Math.min(12, 6.5 + pAppr * 1.6); c.shoveT = 1.2; }   // si lo llevás contra el muro, vuelca
         P.sv = (P.sv || 0) * 0.5; P.v *= 1 - 0.1 * dt;
         if (!(P.sideCD > 0)) { P.sideCD = 0.3; thump(0.25); beep(170, 0.08, 'square', 0.06); }
         continue;
@@ -1105,7 +1260,7 @@ function rkInsert(name, t) {
 }
 const RK_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 const RK_OUT = 0.85, RK_HOLD = 1.7, RK_TITLE = 6.5;   // salida de las letras, tiempo que se queda el nombre, y duración del título con llamas
-const RK_NAME_TIME = 10, RK_PAGE_TIME = 6, RK_INTRO = 32;   // el ranking aparece en la intro entre 0:32 y 0:44
+const RK_NAME_TIME = 15, RK_PAGE_TIME = 6, RK_INTRO = 32;   // el ranking aparece en la intro entre 0:32 y 0:44
 // Final de Arcade: si el tiempo entra en el ranking se pide el nombre; si no, vuelve a la demo.
 function soloEnd() {
   if (S.rk) return;
@@ -1756,6 +1911,17 @@ function numberText(c, str, x, y, size, def) {
   c.lineWidth = Math.max(3, size * 0.12); c.strokeStyle = light ? '#ffffff' : '#10224a'; c.fillStyle = light ? '#14161c' : '#ffffff';
   c.strokeText(str, x, y); c.fillText(str, x, y);
 }
+function shortSideName(s) {
+  const clean = String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!clean) return 'RACING';
+  return clean.slice(0, Math.min(6, clean.length));
+}
+function shortTagName(s) {
+  const clean = String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ' ');
+  const words = clean.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+  const joined = words.join(' ');
+  return joined.slice(0, Math.min(12, joined.length));
+}
 function paintSide(c, w, h, def) {
   if (def.cpuOnly) {
     // Los NPC violetas de multiplayer no tienen marcas ni letras: solo el 00.
@@ -1798,15 +1964,59 @@ function paintSide(c, w, h, def) {
     });
     return;
   }
-  c.fillStyle = def.color; c.fillRect(0, 0, w, h);
-  c.fillStyle = def.sec; c.fillRect(0, h * 0.68, w, h * 0.32);
-  c.fillStyle = def.accent; c.fillRect(0, h * 0.66, w, h * 0.06);
-  c.fillStyle = def.sec; c.beginPath(); c.moveTo(0, h * .70); c.lineTo(w * .3, h * .70); c.lineTo(0, h * .24); c.fill();
-  numberText(c, def.num, w * .52, h * .40, h * .70, def);
-  c.font = '700 ' + Math.round(h * .18) + 'px ' + F2;
-  c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.fillStyle = isLight(def.sec) ? '#14161c' : '#ffffff';
-  c.fillText(def.spons, w * .52, h * .85, w * .9);
+  const lt = isLight(def.color), txt = lt ? '#14161c' : '#ffffff', ol = lt ? '#ffffff' : '#0d1530';
+  const gr = c.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, shadeHex(def.color, 1.16)); gr.addColorStop(.55, def.color); gr.addColorStop(1, shadeHex(def.color, .78));
+  c.fillStyle = gr; c.fillRect(0, 0, w, h);
+  const v = (parseInt(def.num, 10) || 0) % 4;
+  c.fillStyle = def.sec;
+  c.beginPath();
+  if (v === 0) {
+    c.moveTo(0, h * .20); c.lineTo(w * .54, h * .13); c.lineTo(w * .96, h * .24); c.lineTo(w, h * .38); c.lineTo(w, h * .52); c.lineTo(w * .72, h * .50); c.lineTo(w * .45, h * .39); c.lineTo(0, h * .42);
+  } else if (v === 1) {
+    c.moveTo(0, h * .17); c.lineTo(w * .34, h * .12); c.lineTo(w * .62, h * .19); c.lineTo(w, h * .15); c.lineTo(w, h * .33); c.lineTo(w * .69, h * .43); c.lineTo(w * .28, h * .39); c.lineTo(0, h * .46);
+  } else if (v === 2) {
+    c.moveTo(0, h * .24); c.lineTo(w * .29, h * .13); c.lineTo(w * .59, h * .12); c.lineTo(w, h * .27); c.lineTo(w, h * .47); c.lineTo(w * .76, h * .49); c.lineTo(w * .44, h * .37); c.lineTo(0, h * .39);
+  } else {
+    c.moveTo(0, h * .18); c.lineTo(w * .26, h * .14); c.lineTo(w * .47, h * .18); c.lineTo(w * .71, h * .12); c.lineTo(w, h * .22); c.lineTo(w, h * .40); c.lineTo(w * .73, h * .47); c.lineTo(w * .40, h * .41); c.lineTo(0, h * .45);
+  }
+  c.closePath(); c.fill();
+  c.fillStyle = def.accent;
+  c.beginPath();
+  if (v === 0) {
+    c.moveTo(0, h * .27); c.lineTo(w * .54, h * .19); c.lineTo(w * .90, h * .28); c.lineTo(w * .78, h * .33); c.lineTo(w * .50, h * .27); c.lineTo(0, h * .34);
+  } else if (v === 1) {
+    c.moveTo(0, h * .23); c.lineTo(w * .32, h * .18); c.lineTo(w * .57, h * .24); c.lineTo(w * .88, h * .20); c.lineTo(w * .78, h * .27); c.lineTo(w * .50, h * .31); c.lineTo(w * .19, h * .29); c.lineTo(0, h * .33);
+  } else if (v === 2) {
+    c.moveTo(0, h * .29); c.lineTo(w * .28, h * .19); c.lineTo(w * .56, h * .18); c.lineTo(w * .90, h * .30); c.lineTo(w * .78, h * .34); c.lineTo(w * .45, h * .29); c.lineTo(0, h * .37);
+  } else {
+    c.moveTo(0, h * .25); c.lineTo(w * .23, h * .21); c.lineTo(w * .43, h * .24); c.lineTo(w * .68, h * .18); c.lineTo(w * .91, h * .25); c.lineTo(w * .82, h * .30); c.lineTo(w * .62, h * .29); c.lineTo(w * .41, h * .33); c.lineTo(0, h * .36);
+  }
+  c.closePath(); c.fill();
+  c.fillStyle = def.sec; c.fillRect(0, h * .76, w, h * .24);
+  c.fillStyle = def.accent; c.fillRect(0, h * .72, w, h * .04);
+  const gb = c.createLinearGradient(0, h * .76, 0, h); gb.addColorStop(0, 'rgba(255,255,255,.22)'); gb.addColorStop(.18, 'rgba(255,255,255,.08)'); gb.addColorStop(1, 'rgba(0,0,0,.18)');
+  c.fillStyle = gb; c.fillRect(0, h * .76, w, h * .24);
+  c.save();
+  c.font = '900 ' + Math.round(h * .69) + 'px ' + F1; c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.lineJoin = 'round';
+  const nms = c.measureText(def.num), nW = (nms.actualBoundingBoxRight || nms.width) + (nms.actualBoundingBoxLeft || 0), nA = nms.actualBoundingBoxAscent || h * .5, nD = nms.actualBoundingBoxDescent || 0;
+  c.translate(w * .525, h * .48 + (nA - nD) / 2); c.transform(1, 0, -.16, 1, 0, 0);
+  const nX = -nW / 2 + (nms.actualBoundingBoxLeft || 0) - .08 * (nA - nD);
+  c.lineWidth = h * .10; c.strokeStyle = lt ? '#ffffff' : '#111114'; c.strokeText(def.num, nX, 0);
+  c.lineWidth = h * .026; c.strokeStyle = def.accent; c.strokeText(def.num, nX, 0);
+  c.fillStyle = lt ? '#14161c' : '#ffffff'; c.fillText(def.num, nX, 0); c.restore();
+  const short = shortSideName(def.spons);
+  const small = shortTagName(def.tag) || 'TEAM';
+  c.textBaseline = 'middle'; c.lineJoin = 'round';
+  c.textAlign = 'right';
+  c.font = 'italic 900 ' + Math.round(h * .16) + 'px ' + F1;
+  c.lineWidth = Math.max(2, h * .038); c.strokeStyle = lt ? '#ffffff' : '#0d1530'; c.fillStyle = lt ? '#14161c' : '#ffffff';
+  c.strokeText(short, w * .93, h * .17, w * .24); c.fillText(short, w * .93, h * .17, w * .24);
+  c.font = '700 ' + Math.round(h * .072) + 'px ' + F2; c.lineWidth = Math.max(2, h * .018); c.strokeStyle = ol; c.fillStyle = txt;
+  c.strokeText(small, w * .91, h * .28, w * .20); c.fillText(small, w * .91, h * .28, w * .20);
+  c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round';
+  c.font = 'italic 900 ' + Math.round(h * .18) + 'px ' + F1;
+  c.lineWidth = Math.max(3, h * .04); c.strokeStyle = isLight(def.sec) ? '#ffffff' : '#0d1530'; c.fillStyle = isLight(def.sec) ? '#14161c' : '#ffffff';
+  c.strokeText(short, w * .52, h * .855, w * .38); c.fillText(short, w * .52, h * .855, w * .38);
 }
 /* lateral del #41: rojo de punta a punta; t=0 frente, t=1 trasera; fl = el frente queda a la izquierda de la textura */
 function paintSideP(c, w, h, fl) {
@@ -1901,24 +2111,43 @@ function paintRear(c, w, h, def) {
     c.fillStyle = isYel() ? '#3f4146' : '#96989a'; c.fillRect(0, h * .95, w, h * .05);
     return;
   }
-  c.fillStyle = def.color; c.fillRect(0, 0, w, h);
-  c.fillStyle = def.sec; c.fillRect(0, h * .68, w, h * .32);
-  c.font = '400 ' + Math.round(h * .35) + 'px ' + F1;
+  const gr = c.createLinearGradient(0, 0, 0, h * .8); gr.addColorStop(0, shadeHex(def.color, 1.15)); gr.addColorStop(.5, def.color); gr.addColorStop(1, shadeHex(def.color, .8));
+  c.fillStyle = gr; c.fillRect(0, 0, w, h);
+  const v = (parseInt(def.num, 10) || 0) % 4;
+  c.fillStyle = 'rgba(255,255,255,.14)';
+  if (v === 0) {
+    c.beginPath(); c.moveTo(w * .06, h * .16); c.lineTo(w * .24, h * .16); c.lineTo(w * .18, h * .78); c.lineTo(w * .02, h * .78); c.closePath(); c.fill();
+    c.beginPath(); c.moveTo(w * .94, h * .16); c.lineTo(w * .76, h * .16); c.lineTo(w * .82, h * .78); c.lineTo(w * .98, h * .78); c.closePath(); c.fill();
+  } else if (v === 1) {
+    c.fillRect(w * .10, h * .18, w * .09, h * .56);
+    c.fillRect(w * .81, h * .18, w * .09, h * .56);
+  } else if (v === 2) {
+    c.beginPath(); c.moveTo(w * .08, h * .18); c.lineTo(w * .22, h * .18); c.lineTo(w * .16, h * .78); c.lineTo(w * .03, h * .78); c.closePath(); c.fill();
+    c.beginPath(); c.moveTo(w * .92, h * .18); c.lineTo(w * .78, h * .18); c.lineTo(w * .84, h * .78); c.lineTo(w * .97, h * .78); c.closePath(); c.fill();
+    c.fillStyle = 'rgba(0,0,0,.12)'; c.fillRect(w * .46, h * .10, w * .08, h * .68);
+  } else {
+    c.beginPath(); c.moveTo(w * .04, h * .74); c.lineTo(w * .17, h * .18); c.lineTo(w * .27, h * .18); c.lineTo(w * .14, h * .74); c.closePath(); c.fill();
+    c.beginPath(); c.moveTo(w * .96, h * .74); c.lineTo(w * .83, h * .18); c.lineTo(w * .73, h * .18); c.lineTo(w * .86, h * .74); c.closePath(); c.fill();
+  }
+  const lt = isLight(def.color);
+  const short = shortSideName(def.spons);
+  const small = shortTagName(def.tag) || '';
   c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round';
-  c.lineWidth = Math.max(3, h * .05); c.strokeStyle = '#11182a';
-  c.fillStyle = isLight(def.color) ? '#15171c' : '#fff';
-  c.strokeText(def.spons, w * .5, h * .33, w * .88); c.fillText(def.spons, w * .5, h * .33, w * .88);
-  c.fillStyle = def.accent; c.fillRect(w * .14, h * .64, w * .72, h * .21);
-  c.font = '700 ' + Math.round(h * .16) + 'px ' + F2;
-  c.fillStyle = isLight(def.accent) ? '#14161c' : '#ffffff';
-  c.fillText(def.tag || ('Nº ' + def.num), w * .5, h * .75);
+  c.font = 'italic 900 ' + Math.round(h * .34) + 'px ' + F1;
+  c.lineWidth = Math.max(3, h * .055); c.strokeStyle = lt ? '#ffffff' : '#0d1530'; c.fillStyle = lt ? '#14161c' : '#ffffff';
+  c.strokeText(short, w * .5, h * .39, w * .68); c.fillText(short, w * .5, h * .39, w * .68);
+  c.font = '700 ' + Math.round(h * .12) + 'px ' + F2; c.lineWidth = Math.max(2, h * .028);
+  c.strokeStyle = '#0d1530'; c.fillStyle = '#ffffff';
+  c.strokeText(small, w * .5, h * .63, w * .52); c.fillText(small, w * .5, h * .63, w * .52);
+  c.fillStyle = def.sec; c.fillRect(0, h * .80, w, h * .20);
+  c.fillStyle = def.accent; c.fillRect(0, h * .78, w, h * .03);
 }
 const isYel = () => LK.dark;   // autos manuales: franjas y paragolpes oscuros
 const ink = (a, b) => LK.ink || (isYel() ? a : b);   // color de los textos del auto
 function paintHood(c, w, h, def) {
   if (def.cpuOnly) {
+    // Capó liso para los CPU, sin los dos falsos caños longitudinales.
     c.fillStyle = def.color; c.fillRect(0, 0, w, h);
-    c.fillStyle = def.sec; c.fillRect(0, 0, w * 0.04, h); c.fillRect(w * 0.96, 0, w * 0.04, h);
     return;
   }
   c.fillStyle = def.isPlayer ? PBLUE : def.color; c.fillRect(0, 0, w, h);
@@ -1941,8 +2170,11 @@ function paintHood(c, w, h, def) {
     c.restore(); c.fillStyle = LK.edge; c.fillRect(0, 0, w * .05, h * 0.186); c.fillRect(w * .95, 0, w * .05, h * 0.186);
     return;
   }
-  c.font = '700 ' + Math.round(h * .22) + 'px ' + F2; c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.fillStyle = isLight(def.color) ? '#111' : '#fff'; c.fillText(def.spons, w * .5, h * .48, w * .8);
+  // Sólo pintura y sponsor central: sin las dos bandas grises del capó.
+  c.font = 'italic 900 ' + Math.round(h * .24) + 'px ' + F1; c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round';
+  c.lineWidth = Math.max(2, h * .045); c.strokeStyle = isLight(def.color) ? '#10151c' : '#0d1530';
+  c.fillStyle = isLight(def.color) ? '#171a22' : '#f7f9ff';
+  c.strokeText(def.spons, w * .5, h * .48, w * .74); c.fillText(def.spons, w * .5, h * .48, w * .74);
 }
 function paintRoof(c, w, h, def) {
   if (def.cpuOnly) {
@@ -1960,11 +2192,48 @@ function paintRoof(c, w, h, def) {
     c.lineWidth = w * .075; c.strokeStyle = '#11151b'; c.strokeText(PAINT_NUM, 0, 0, h * .85);
     c.fillStyle = ink('#ff8a1a', '#f5cf18'); c.fillText(PAINT_NUM, 0, 0, h * .85); c.restore();
   } else {
-    c.fillStyle = def.accent; c.fillRect(0, 0, w, h * .08); c.fillRect(0, h * .92, w, h * .08);
-    numberText(c, def.num, w * .5, h * .52, h * .70, def);
+    const lt = isLight(def.color); // Tonalidad de la pintura rival (evita ReferenceError al crear texturas 3D).
+    c.fillStyle = def.accent; c.fillRect(0, 0, w * .05, h); c.fillRect(w * .95, 0, w * .05, h);
+    c.save(); c.translate(w * .50, h * .52); c.rotate(Math.PI / 2);
+    c.font = '900 ' + Math.round(w * .53) + 'px ' + F1;
+    c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round';
+    c.lineWidth = w * .075; c.strokeStyle = lt ? '#ffffff' : '#11151b'; c.strokeText(def.num, 0, 0, h * .85);
+    c.fillStyle = lt ? '#14161c' : '#f5f7fb'; c.fillText(def.num, 0, 0, h * .85);
+    c.restore();
   }
 }
 function paintTrunk(c, w, h, def) {
+  if (def && def.cpuOnly) {
+    c.fillStyle = def.color; c.fillRect(0, 0, w, h);
+    c.fillStyle = def.sec; c.fillRect(0, 0, w * .05, h); c.fillRect(w * .95, 0, w * .05, h);
+    c.fillStyle = def.accent; c.fillRect(w * .34, h * .69, w * .34, h * .13);
+    return;
+  }
+  if (def && !def.isPlayer) {
+    const short = shortSideName(def.spons);
+    const small = shortTagName(def.tag) || 'RACING';
+    const lt = isLight(def.color);
+    c.fillStyle = def.color; c.fillRect(0, 0, w, h);
+    { const pad = h * 0.25; c.save(); c.translate(0, pad); c.scale(1, (h - pad) / h); }
+    c.fillStyle = def.sec; c.fillRect(0, 0, w * .05, h); c.fillRect(w * .95, 0, w * .05, h);
+    c.fillStyle = def.accent; c.fillRect(w * .08, h * .08, w * .02, h * .56); c.fillRect(w * .90, h * .08, w * .02, h * .56);
+    c.save(); c.translate(w * .5, h * .28); c.transform(1, 0, -.16, 1, 0, 0);
+    c.font = 'italic 900 ' + Math.round(h * .40) + 'px Georgia, serif';
+    c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round';
+    c.lineWidth = h * .045; c.strokeStyle = lt ? '#1a1d24' : '#0d1323'; c.strokeText(short, 0, 0, w * .84);
+    c.fillStyle = lt ? '#101216' : '#f5f7fb'; c.fillText(short, 0, 0, w * .84);
+    c.font = '900 ' + Math.round(h * .115) + 'px ' + F1;
+    c.lineWidth = h * .022; c.strokeStyle = lt ? '#242830' : '#111824'; c.fillStyle = lt ? shadeHex(def.accent, .86) : shadeHex(def.accent, 1.08);
+    c.strokeText(small, 0, h * .21, w * .60); c.fillText(small, 0, h * .21, w * .60);
+    c.restore();
+    c.fillStyle = lt ? 'rgba(0,0,0,.72)' : 'rgba(255,255,255,.18)'; c.fillRect(w*.25, h*.68, w*.50, h*.14);
+    c.font = '900 ' + Math.round(h * .125) + 'px ' + F1;
+    c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillStyle = lt ? '#ffffff' : '#ffd23f';
+    const backLabel = ((parseInt(def.num, 10) || 0) % 2 === 0) ? short : small;
+    c.fillText(backLabel, w * .5, h * .755, w*.44);
+    c.restore(); c.fillStyle = def.sec; c.fillRect(0, 0, w * .05, h * 0.25); c.fillRect(w * .95, 0, w * .05, h * 0.25);
+    return;
+  }
   c.fillStyle = PBLUE; c.fillRect(0, 0, w, h);
   { const pad = h * 0.25; c.save(); c.translate(0, pad); c.scale(1, (h - pad) / h); }   // el baúl llega hasta la luneta: franja extra arriba
   c.fillStyle = LK.edge; c.fillRect(0, 0, w * .05, h); c.fillRect(w * .95, 0, w * .05, h);
@@ -2018,6 +2287,54 @@ function hoodGeo() {
   g.setIndex(idx); g.computeVertexNormals(); return g;
 }
 
+/* Capó del jugador: la textura conserva exactamente el dibujo original, pero
+   la malla dispone de vértices para una única abolladura frontal arcade.
+   Nunca se deforman el baúl, las puertas, el alerón ni el paragolpes trasero. */
+function hoodDamageGeo() {
+  const xs = [0.86, 0.64, 0.40, 0.18, 0, -0.18, -0.40, -0.64, -0.86];
+  const zs = [0.955, 1.16, 1.40, 1.64, 1.79, 1.92, 2.05, 2.20, 2.40];
+  const pos = [], uv = [], idx = [];
+  for (const z of zs) for (const x of xs) {
+    pos.push(x, bodyTopY(z) + .014, z);
+    uv.push((x + .86) / 1.72, 1 - (z - .955) / (2.40 - .955));
+  }
+  const w = xs.length;
+  for (let row = 0; row < zs.length - 1; row++) {
+    for (let col = 0; col < w - 1; col++) {
+      const a = row * w + col;
+      idx.push(a, a + 1, a + w + 1, a, a + w + 1, a + w);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx); geo.computeVertexNormals();
+  return geo;
+}
+function setHoodImpact(h, hitLeft, hitRight) {
+  if (!h) return;
+  const key = (hitLeft ? '1' : '0') + (hitRight ? '1' : '0');
+  if (h.key === key) return;
+  const p = h.geo.attributes.position, base = h.base;
+  for (let i = 0; i < base.length; i += 3) {
+    const x = base[i], y = base[i + 1], z = base[i + 2];
+    let dx = 0, dy = 0, dz = 0;
+    for (const sx of [1, -1]) {
+      if (!(sx > 0 ? hitLeft : hitRight)) continue;
+      // Un único quiebre frontal suave. La forma es FIJA, sin ondas ni niveles.
+      const influence = clamp((sx * x + .12) / .80, 0, 1);
+      const ridge = Math.max(0, 1 - Math.abs(z - 1.90) / .50);
+      const w = influence * ridge;
+      dy += .22 * w;
+      dx -= sx * .017 * w;
+      dz -= .035 * w;
+    }
+    p.array[i] = x + dx; p.array[i + 1] = y + dy; p.array[i + 2] = z + dz;
+  }
+  p.needsUpdate = true; h.geo.computeVertexNormals();
+  h.geo.computeBoundingSphere(); h.geo.computeBoundingBox();
+  h.key = key;
+}
 
 /* Vidrios arcade a lo Daytona USA: la tonalidad del cristal cambia según
    el avance y los giros. NO se dibujan nubes ni figuras sobre el vidrio. */
@@ -2134,20 +2451,27 @@ function buildCar(def, shared, renderer, isPlayer) {
   };
   if (isPlayer) {
     const mkSide = fl => new THREE.MeshLambertMaterial({ map: ctex(1024, 150, c => paintSideP(c, 1024, 150, fl), false, renderer, (paints[paints.length] = { fn: (c, w, h) => paintSideP(c, w, h, fl), w: 1024, h: 150, def })), side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
-    g.add(new THREE.Mesh(shared.sideGeoL, mkSide(true)));
-    g.add(new THREE.Mesh(shared.sideGeoR, mkSide(false)));
+    { const a = new THREE.Mesh(shared.sideGeoL, mkSide(true)), b2 = new THREE.Mesh(shared.sideGeoR, mkSide(false)); g.add(a); g.add(b2); }
   } else {
-    const sideMat = dm(paintSide, 256, 96);
+    const sideMat = dm(paintSide, 512, 192);
     const dl = new THREE.Mesh(shared.decalSide, sideMat);
     dl.position.set(1.015, 0.64, 0.0); dl.rotation.y = Math.PI / 2; g.add(dl);
     const dr = new THREE.Mesh(shared.decalSide, sideMat);
     dr.position.set(-1.015, 0.64, 0.0); dr.rotation.y = -Math.PI / 2; g.add(dr);
   }
-  const rd = new THREE.Mesh(shared.decalRear, dm(paintRear, isPlayer ? 512 : 256, isPlayer ? 196 : 112));
+  const rd = new THREE.Mesh(shared.decalRear, dm(paintRear, 512, isPlayer ? 196 : 224));
   rd.position.set(0, 0.75, -2.592); rd.rotation.y = Math.PI; g.add(rd);
-  g.add(new THREE.Mesh(shared.hoodQuad, dm(paintHood, isPlayer ? 512 : 128, isPlayer ? 256 : 96)));
-  cab.add(new THREE.Mesh(shared.roofQuad, dm(paintRoof, isPlayer ? 256 : 128, isPlayer ? 256 : 96)));
-  if (isPlayer) g.add(new THREE.Mesh(shared.trunkQuad, dm(paintTrunk, 512, 256)));
+  let hoodDamage = null;
+  if (isPlayer) {
+    const geo = hoodDamageGeo();
+    const hood = new THREE.Mesh(geo, dm(paintHood, 512, 256));
+    g.add(hood);
+    hoodDamage = { geo, base: new Float32Array(geo.attributes.position.array), key: '00' };
+  } else {
+    g.add(new THREE.Mesh(shared.hoodQuad, dm(paintHood, 256, 192)));
+  }
+  cab.add(new THREE.Mesh(shared.roofQuad, dm(paintRoof, 256, isPlayer ? 256 : 192)));
+  g.add(new THREE.Mesh(shared.trunkQuad, dm(paintTrunk, isPlayer ? 512 : 384, isPlayer ? 256 : 224)));
 
   const wheels = [];
   const wheelX = 0.97; // posición original: sin sobresalir de la carrocería
@@ -2212,7 +2536,7 @@ function buildCar(def, shared, renderer, isPlayer) {
     const plate = new THREE.Mesh(new THREE.BoxGeometry(.44, .15, .025), shared.dark);
     plate.position.set(0, .38, -2.666); g.add(plate);
   }
-  const damageModel = isPlayer ? { spoiler, spL, spR, cab, rearBump, rearLower } : null;
+  const damageModel = isPlayer ? { spoiler, spL, spR, cab, rearBump, rearLower, hoodDamage } : null;
   const sh = new THREE.Mesh(shared.shadowGeo, shared.shadowMat); sh.position.y = .045; g.add(sh);
   return { group: g, wheels, bodyMat, cabMat, lowerMat, isPlayer, damageModel, glassSurfaces, paints, bumpMat: isPlayer ? bumpMat : null, sideGlassMat: isPlayer ? glass : null, b: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] };
 }
@@ -3136,7 +3460,7 @@ function mmDraw(m) {
   hx.fillText(MM_ITEMS[m.sel].desc, 111, 406);
 }
 /* ===== MULTIPLAYER: salas de hasta 8 jugadores usando nuestro servidor WebSocket. ===== */
-const NET = { sawHost: false, noHost: 0, r: null, code: '', name: '', t: 'auto', host: false, busy: false, subs: [], rid: 0, lastSend: 0, peerId: '', state: null, clockOffset: 0, cpu: false };
+const NET = { sawHost: false, noHost: 0, r: null, code: '', name: '', t: 'auto', host: false, busy: false, subs: [], rid: 0, lastSend: 0, peerId: '', state: null, clockOffset: 0, pingMs: null, cpu: false };
 const mpNow = () => Date.now() / 1000 + (NET.clockOffset || 0);
 const mpReadyToStart = () => { if (!NET.state || NET.state.phase !== 'lobby') return false; const pl = mpPlayers(); return pl.length >= 2 && pl.every(p => p.peer === (NET.state && NET.state.host) || !!(NET.state && NET.state.ready && NET.state.ready[p.peer])); };
 const mpSendCommand = (name, value) => { try { if (NET.r) NET.r.command(name, value); } catch (e) { console.warn(e); } };
@@ -3195,7 +3519,8 @@ async function mpEnter(joinCode) {
     const room = await netReady();
     if (!room) { mpStatus('No hay conexión multijugador. Abrí el juego desde la URL del servidor, no como archivo HTML.'); return; }
     const r = await room.join('cab-' + code);
-    NET.r = r; NET.code = code; NET.name = nm; NET.host = !joinCode; NET.t = S.trans; NET.peerId = ''; NET.sawHost = !joinCode; NET.noHost = 0; NET.state = r.state(); NET.rid = (NET.state && NET.state.rid) || 0;
+    NET.r = r; NET.code = code; NET.name = nm; NET.host = !joinCode; NET.t = S.trans; NET.peerId = ''; NET.sawHost = !joinCode; NET.noHost = 0; NET.state = r.state(); NET.rid = (NET.state && NET.state.rid) || 0; NET.pingMs = null;
+    NET.clockOffset = NET.state && Number.isFinite(NET.state.serverNow) ? NET.state.serverNow - Date.now() / 1000 : 0;
     NET.subs.push(r.onPeers(mpOnPeers, () => mpLost()));
     await r.presence({ n: nm, t: NET.t, c: S.course | 0 });
     if (joinCode) {
@@ -3206,7 +3531,7 @@ async function mpEnter(joinCode) {
   } catch (e) { await mpDrop(); mpStatus('No se pudo conectar (' + ((e && (e.code || e.message)) || 'error') + ').'); }
   finally { NET.busy = false; }
 }
-async function mpDrop() { const r = NET.r; NET.r = null; NET.subs.forEach(u => { try { u(); } catch (e) { } }); NET.subs = []; S.mp = false; S.mySeat = 0; NET.state = null; repaintPlayer(S.trans); if (r) { try { await r.leave(); } catch (e) { } } }
+async function mpDrop() { const r = NET.r; NET.r = null; NET.subs.forEach(u => { try { u(); } catch (e) { } }); NET.subs = []; S.mp = false; S.mySeat = 0; NET.state = null; NET.pingMs = null; NET.clockOffset = 0; repaintPlayer(S.trans); if (r) { try { await r.leave(); } catch (e) { } } }
 function mpLost() { if (S.mp) { mpLeave(true); } }
 function mpOpenLobby() { voiceStop(); S.sel = true; S.lb = { t: 0, msg: '', msgT: 0, hit: [] }; beep(660, 0.08, 'square', 0.05); setTimeout(() => beep(990, 0.1, 'square', 0.05), 90); }
 async function mpLeave(lost) {
@@ -3241,8 +3566,17 @@ function mpOnPeers() {
   const pl = mpPlayers();
   if (!state) return;
   if (state !== NET.state) {
-    NET.clockOffset = (Number(state.serverNow) || Date.now()/1000) - Date.now()/1000;
+    // serverNow en un mensaje ya recibido NO es la hora actual (incluye tránsito).
+    if (!NET.r.clock || !NET.r.clock().valid) {
+      const rough = (Number(state.serverNow) || Date.now() / 1000) - Date.now() / 1000;
+      NET.clockOffset = NET.clockOffset ? NET.clockOffset * 0.9 + rough * 0.1 : rough;
+    }
     NET.state = state;
+  }
+  if (NET.r.clock && NET.r.clock().valid) {
+    const sync = NET.r.clock();
+    NET.clockOffset = sync.offset;
+    NET.pingMs = Math.round(sync.rtt * 1000);
   }
   NET.host = state.host === mpMyPeer();
   NET.cpu = !!state.cpu;
@@ -3303,7 +3637,7 @@ function startRaceMP(ord) {
   let ci = 0;
   ord.forEach((pe, k) => {
     if (pe === me) return; const c = cars[ci++]; if (!c) return; const gg = mpGrid(k + cpuN);
-    c.unused = false; c.remote = pe; c.run = true; c.v = PACE; c.d = gg.d; c.lane = gg.d; c.dist = gg.dist - back; c.psi = 0; c.phi = 0; c.snap = null; c.hadSnap = false; c.lv = 0;
+    c.unused = false; c.remote = pe; c.run = true; c.v = PACE; c.d = gg.d; c.lane = gg.d; c.dist = gg.dist - back; c.psi = 0; c.phi = 0; c.snap = null; c.hadSnap = false; c.lv = 0; c.netAge = Infinity; c.netHitDist = null; c.netHitD = null;
     c.pname = (info[pe] && info[pe].n) || 'Piloto';
     c.seat = mpSeat(pe); c.color = MP_CARS[c.seat - 1].top;
     if (remoteMeshes[ci - 1]) repaintMesh(remoteMeshes[ci - 1], MP_CARS[c.seat - 1], String(c.seat));
@@ -3336,11 +3670,19 @@ function mpBackToLobby() {
   mpPub({ p: null });
 }
 function aiStep(dt) { if (S.mp) mpUpdateRemotes(dt); else updateAI(dt, P); }
+// Retrasamos una fracción de segundo la imagen del rival para interpolar
+// dos snapshots reales. Para las colisiones usamos su pose estimada actual.
+const MP_RENDER_DELAY = 0.12;
+const mpPredict = (p, elapsed) => ({
+  dist: p[0] + p[2] * Math.cos(p[3]) * elapsed,
+  d: p[1] + p[2] * Math.sin(p[3]) * elapsed,
+  v: p[2], psi: p[3], phi: p[4], fin: p[6]
+});
 function mpUpdateRemotes(dt) {
   if (!NET.r) return;
   const timeFromCountdown = Math.max(0, mpNow() - (NET.state ? NET.state.countdownAt : mpNow()));
   const tR = Math.max(0, timeFromCountdown - CD_TOTAL);
-  const peers = NET.r.peers(), now = Date.now();
+  const peers = NET.r.peers(), now = mpNow(), drawAt = now - MP_RENDER_DELAY;
   for (const c of cars) {
     if (c.cpu) {
       const speed = 42 + (c.cpuId % 8) * 2.2;
@@ -3355,21 +3697,59 @@ function mpUpdateRemotes(dt) {
     if (!c.remote) continue;
     const pe = peers.find(p => p.peer === c.remote);
     if (!pe) { c.unused = true; c.run = false; continue; }
-    const pr = pe.presence || {}, p = pr.p;
+    const pr = pe.presence || {}, p = pr.p, history = pe.samples || [];
     c.pname = pr.n || c.pname; c.seat = pe.slot || c.seat;
-    if (Array.isArray(p) && p.length >= 8) {
+    if (history.length) {
+      const latest = history[history.length - 1], age = Math.max(0, now - latest.t);
       c.hadSnap = true;
-      if (!c.snap || c.snap.u !== pe.updatedAt) c.snap = { u: pe.updatedAt, dist: p[0], d: p[1], v: p[2], psi: p[3], phi: p[4], lap: p[5], fin: p[6], tum: p[7] };
-      const s = c.snap, age = Math.min(0.3, Math.max(0, (now - s.u) / 1000));
-      const td = s.dist + s.v * Math.cos(s.psi) * age, tdd = s.d + s.v * Math.sin(s.psi) * age;
-      if (Math.abs(td - c.dist) > 25) c.dist = td; else c.dist += (td - c.dist) * Math.min(1, dt * 14);
-      const od = c.d; c.d += (tdd - c.d) * Math.min(1, dt * 14); c.lv = (c.d - od) / Math.max(dt, 1e-3);
-      c.v = s.v; c.psi = s.psi; c.phi = s.phi; if (s.fin && !c.fin) { c.fin = 1; if (NET.firstFin == null) NET.firstFin = mpNow(); } c.unused = false; c.run = true;
-    } else if (c.hadSnap && pr.st === 'lobby') { c.unused = true; c.run = false; }
+      c.netAge = age;
+      // La pose de contacto no retrocede ni avanza el auto del otro navegador.
+      // Extrapolación acotada para no chocar contra paquetes demasiado viejos.
+      const hit = mpPredict(latest.p, Math.min(0.20, age));
+      c.netHitDist = hit.dist; c.netHitD = hit.d;
+      let shown;
+      const first = history[0];
+      if (drawAt <= first.t) shown = mpPredict(first.p, 0);
+      else {
+        let a = null, b = null;
+        for (let i = history.length - 2; i >= 0; i--) {
+          if (history[i].t <= drawAt) { a = history[i]; b = history[i + 1]; break; }
+        }
+        if (a && b && b.t > a.t) {
+          const f = clamp((drawAt - a.t) / (b.t - a.t), 0, 1), x = a.p, y = b.p;
+          shown = {
+            dist: lerp(x[0], y[0], f), d: lerp(x[1], y[1], f),
+            v: lerp(x[2], y[2], f), psi: lerp(x[3], y[3], f),
+            phi: lerp(x[4], y[4], f), fin: y[6]
+          };
+        } else shown = mpPredict(latest.p, Math.min(0.16, Math.max(0, drawAt - latest.t)));
+      }
+      // Un paquete recién llegado no causa un salto total, salvo una diferencia
+      // enorme (p.ej. teletransporte al reingresar). Límite por cuadro del ajuste.
+      const gap = shown.dist - c.dist, sideways = shown.d - c.d;
+      if (Math.abs(gap) > 35) c.dist = shown.dist;
+      else c.dist += clamp(gap * Math.min(1, dt * 12), -Math.max(0.55, dt * 100), Math.max(0.55, dt * 100));
+      const oldD = c.d;
+      c.d += clamp(sideways * Math.min(1, dt * 12), -Math.max(0.08, dt * 16), Math.max(0.08, dt * 16));
+      c.lv = (c.d - oldD) / Math.max(dt, 1e-3);
+      c.v = shown.v; c.psi = shown.psi; c.phi = shown.phi;
+      if (latest.p[6] && !c.fin) { c.fin = 1; if (NET.firstFin == null) NET.firstFin = mpNow(); }
+      c.unused = false; c.run = true;
+    } else if (Array.isArray(p) && p.length >= 8) {
+      // Compatibilidad transitoria si alguien todavía usa el cliente viejo.
+      c.hadSnap = true;
+      const age = Math.min(.15, Math.max(0, (Date.now() - pe.updatedAt) / 1000));
+      const pose = mpPredict(p, age);
+      c.dist += (pose.dist - c.dist) * Math.min(1, dt * 12);
+      c.d += (pose.d - c.d) * Math.min(1, dt * 12);
+      c.netAge = age; c.netHitDist = pose.dist; c.netHitD = pose.d;
+      c.v = pose.v; c.psi = pose.psi; c.phi = pose.phi;
+      if (p[6] && !c.fin) { c.fin = 1; if (NET.firstFin == null) NET.firstFin = mpNow(); }
+      c.unused = false; c.run = true;
+    } else if (c.hadSnap && pr.st === 'lobby') { c.unused = true; c.run = false; c.netAge = Infinity; }
     else if (S.mode === 'countdown') { c.dist += PACE * dt; c.v = PACE; }
   }
-  // Mantener sólida la parrilla violeta también entre CPU: los que alcanzan
-  // a otro en el mismo carril frenan, en vez de superponerse visualmente.
+  // Los CPU mantienen su trayectoria común, y evitan solapamientos visuales.
   const bots = cars.filter(c => c.cpu && !c.unused).sort((a, b) => b.dist - a.dist);
   for (let i = 1; i < bots.length; i++) {
     const follower = bots[i];
@@ -3606,7 +3986,7 @@ function drawCircuitSelect(c) {
    --------------------------------------------------------------------- */
 const MS_TIME = 10;
 const MS_X = [36, 414], MS_W = 350, MS_BY = 118, MS_PY = 206, MS_PH = 146;
-const MS_FREE_TIME = 15;
+const MS_FREE_TIME = 14;
 const MS_OPT = [
   { name: 'Automatic', tag: 'BEGINNER', kmh: Math.round(MAXV * 3.6), c0: '#46a6ff', c1: '#1544c8', c2: '#9be4ff', trim: '#2b90e8', p0: '#2a64e0', p1: '#0e2a8a' },
   { name: 'Manual·4', tag: 'PROFESSIONAL', kmh: Math.round(MAXV * 3.6 * 1.05), c0: '#ff6a5a', c1: '#b50f16', c2: '#ffd0a0', trim: '#ffc61a', p0: '#e8342c', p1: '#8a0a10' }
@@ -3885,11 +4265,27 @@ function msFreeDraw(m, t, chosen, cT, eo) {
   if (chosen && Math.floor(cT * 11) % 2 === 0) { hx.fillStyle = 'rgba(255,255,255,.7)'; rr(BX, MS_BY, BW, BH, 9); hx.fill(); }
   // aceleración y agarre
   msStat(40, MS_BY, 217, 'ACCELERATION', car.acc); msStat(543, MS_BY, 217, 'GRIP', car.grip);
-  // flechas para cambiar de auto
-  if (!chosen && Math.floor(S.t * 4) % 4 !== 3) {
-    hx.fillStyle = '#d71920'; hx.strokeStyle = '#3a0508'; hx.lineWidth = 3;
-    hx.beginPath(); hx.moveTo(176, MS_PY + MS_PH / 2); hx.lineTo(150, MS_PY + MS_PH / 2 - 18); hx.lineTo(150, MS_PY + MS_PH / 2 + 18); hx.closePath(); hx.fill(); hx.stroke();
-    hx.beginPath(); hx.moveTo(624, MS_PY + MS_PH / 2); hx.lineTo(650, MS_PY + MS_PH / 2 - 18); hx.lineTo(650, MS_PY + MS_PH / 2 + 18); hx.closePath(); hx.fill(); hx.stroke();
+  // Navegación arcade: dos botones discretos a los costados del auto, siempre visibles.
+  // La flecha se desplaza un poquito hacia afuera (sin cartel CAR SELECT ni flashes bruscos).
+  if (!chosen) {
+    const navY = MS_PY + MS_PH * .54, pulse = .5 + .5 * Math.sin(S.t * 5);
+    for (const side of [-1, 1]) {
+      const navX = (side < 0 ? 154 : 646) + side * (pulse * 3);
+      hx.save();
+      hx.fillStyle = '#101a33'; hx.strokeStyle = '#ffe15b'; hx.lineWidth = 2.5;
+      rr(navX - 23, navY - 25, 46, 50, 9); hx.fill(); hx.stroke();
+      hx.fillStyle = '#ffdc38'; hx.strokeStyle = '#48300b'; hx.lineWidth = 1.6;
+      hx.beginPath();
+      hx.moveTo(navX + side * 15, navY);
+      hx.lineTo(navX - side * 1, navY - 15);
+      hx.lineTo(navX - side * 1, navY - 7);
+      hx.lineTo(navX - side * 14, navY - 7);
+      hx.lineTo(navX - side * 14, navY + 7);
+      hx.lineTo(navX - side * 1, navY + 7);
+      hx.lineTo(navX - side * 1, navY + 15);
+      hx.closePath(); hx.fill(); hx.stroke();
+      hx.restore();
+    }
   }
   if (m.flash > 0 && !can3) { hx.fillStyle = 'rgba(255,255,255,' + (m.flash * 2.2).toFixed(2) + ')'; hx.fillRect(PX0, MS_PY, PW, MS_PH); }
   hx.restore();
@@ -4283,22 +4679,28 @@ function drawEnding(te) {
 
 function updateDamageMesh() {
   if (!playerMesh || !playerMesh.damageModel) return;
-  const d = P.damage || 0, m = playerMesh.damageModel, side = P.damageSide || 1;
-  const bent = clamp(d / 0.60, 0, 1), ext = clamp((d - .12) / .88, 0, 1);
-  // Daño limitado: la cabina nunca se encoge. Sólo se ladea hasta 7 grados.
-  m.cab.scale.set(1,1,1);
-  const rx = -0.025 * bent, rz = side * 0.115 * bent, py = 1.0;   // pivota sobre la línea de la carrocería, no sobre el piso
+  // Restaurado del archivo original: sólo el leve ladeo de la cabina.
+  // El golpe se aplica de una vez, NO progresivamente.
+  const bent = P.damage > 0 ? 1 : 0;
+  const m = playerMesh.damageModel, side = P.damageSide || 1;
+  // Solo se abolla el capó si el golpe afecta el FRENTE (o hay un vuelco).
+  // Chocar de atrás no modifica ninguna parte trasera ni activa el capó.
+  setHoodImpact(m.hoodDamage, !!(P.dmg.fl || bent), !!(P.dmg.fr || bent));
+  m.cab.scale.set(1, 1, 1);
+  const rx = -0.025 * bent, rz = side * 0.115 * bent, py = 1.0;
   m.cab.rotation.set(rx, 0, rz);
   m.cab.position.set(py * Math.sin(rz), py * (1 - Math.cos(rz)), -py * Math.sin(rx));
-  // Parte trasera: el alerón se dobla (no cuelga) y el paragolpes se ladea apenas, sin salirse de la carrocería.
-  const rd = clamp((d - .08) / .40, 0, 1);
-  // El alerón se dobla hacia abajo sobre el baúl: la mitad golpeada queda caída contra la carrocería y la otra apenas torcida.
-  m.spoiler.position.y = 1.04 - .02 * rd; m.spoiler.rotation.set(0, 0, 0);
+  // Trasera igual al archivo de referencia: mitad del alerón plegada sobre
+  // el baúl y paragolpes apenas ladeado. La chapa del baúl NO se aplasta.
+  // Estado binario: un solo golpe aplica la pose final, sin daño progresivo.
+  const rearBroken = bent;
   const hitR = side > 0;
-  m.spR.rotation.set((hitR ? -1.05 : -.25) * rd, 0, 0);
-  m.spL.rotation.set((hitR ? -.25 : -1.05) * rd, 0, 0);
-  m.rearBump.rotation.set(0, 0, side * .06 * rd);
-  m.rearBump.position.set(0, .40 - .025 * rd, -2.53);
+  m.spoiler.position.y = 1.04 - 0.02 * rearBroken;
+  m.spoiler.rotation.set(0, 0, 0);
+  m.spR.rotation.set((hitR ? -1.05 : -0.25) * rearBroken, 0, 0);
+  m.spL.rotation.set((hitR ? -0.25 : -1.05) * rearBroken, 0, 0);
+  m.rearBump.rotation.set(0, 0, side * 0.06 * rearBroken);
+  m.rearBump.position.set(0, 0.40 - 0.025 * rearBroken, -2.53);
 }
 function renderSelectCars() {
   const sel = R3.sel, m = S.ms, r = R3.renderer, cw = $('frame').clientWidth, ch = $('frame').clientHeight;
@@ -4348,7 +4750,7 @@ function render(dt) {
     const v = (S.mode !== 'finish' || !S.mp) && !c.unused && (!S.mp || !!c.remote || !!c.cpu) && vis(c);   // en la cinemática final no se ve ningún rival: podrían tapar la toma
     m.group.visible = v && !remote;
     if (remote) remote.group.visible = v;
-    if (v && S.mode !== 'timeout') placeCar(remote || m, c, dt, false);
+    if (v && S.mode !== 'timeout') placeCar(remote || m, c, dt, c.tumble > 0 && c.kind === 'flip');
     if (remote && v && S.mode === 'race') S.tags.push({ seat: c.seat || mpSeat(c.remote), g: remote.group });
   });
   const showP = true;
@@ -4356,7 +4758,7 @@ function render(dt) {
   if (S.mp && S.mode === 'countdown') S.tags.push({ seat: S.mySeat || mpSeat(mpMyPeer()), g: playerMesh.group, mine: true });
   if (S.mode !== 'timeout') placeCar(playerMesh, P, dt, P.tumble > 0 && P.kind === 'flip');
   if (S.mode !== 'timeout') animateCarGlass(playerMesh, P, dt);
-  updateDamageMesh();
+  updateDamageMesh(dt);
   if (BOARD && (S.t - (BOARD.chk || 0) > 0.25 || S.t < (BOARD.chk || 0))) { BOARD.chk = S.t; updateBoard(false); }
   if (S.mode !== 'menu' && S.mode !== 'timeout' && P.tumble <= 0) {
     const b = playerMesh.b, slipA = Math.abs(P.phi - P.psi);

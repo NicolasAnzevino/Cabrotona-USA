@@ -14,6 +14,11 @@
       let intentionalClose = false;
       let completed = false;
       let session = null;
+      let syncInterval = null;
+      const clock = { valid: false, offset: 0, rtt: 0, jitter: 0, samples: [] };
+      const pingClock = () => {
+        if (ws.readyState === WebSocket.OPEN && established) send({ type: 'time_ping', t0: Date.now() / 1000 });
+      };
       const notify = () => { for (const fn of listeners) { try { fn(); } catch (err) { console.warn(err); } } };
       const send = packet => {
         if (ws.readyState !== WebSocket.OPEN) throw new Error('Sin conexión con el servidor');
@@ -23,7 +28,7 @@
         if (typeof id !== 'string') return;
         let peer = everyone.get(id);
         if (!peer) {
-          peer = { peer: id, slot: null, kind: 'viewer', sameTab: id === selfId, isMe: id === selfId, presence: {}, updatedAt: Date.now() };
+          peer = { peer: id, slot: null, kind: 'viewer', sameTab: id === selfId, isMe: id === selfId, presence: {}, updatedAt: Date.now(), samples: [], lastSeq: -1 };
           everyone.set(id, peer);
         }
         peer.sameTab = peer.isMe = id === selfId;
@@ -34,6 +39,7 @@
       const api = {
         peers: () => Array.from(everyone.values()),
         state: () => session,
+        clock: () => ({ valid: clock.valid, offset: clock.offset, rtt: clock.rtt, jitter: clock.jitter }),
         command: (cmd, value) => send({ type: "command", cmd, value }),
         onPeers: (fn, onLost) => {
           if (typeof fn === 'function') listeners.add(fn);
@@ -50,6 +56,7 @@
         leave: async () => {
           intentionalClose = true;
           established = false;
+          if (syncInterval !== null) { clearInterval(syncInterval); syncInterval = null; }
           if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(1000, 'Salida de sala');
         }
       };
@@ -73,6 +80,8 @@
           for (const peer of message.peers || []) addOrChange(peer.id, peer.presence, true, peer.slot);
           established = true;
           if (message.state) session = message.state;
+          pingClock();
+          if (syncInterval === null) syncInterval = setInterval(pingClock, 3000);
           if (!completed) { completed = true; resolve(api); }
           notify();
         } else if (message.type === 'room_state') {
@@ -88,8 +97,37 @@
           everyone.delete(message.id);
           notify();
         } else if (message.type === 'peer_presence') {
-          addOrChange(message.id, message.patch);
+          const patch = message.patch || {};
+          const seq = message.seq;
+          let peer = everyone.get(message.id);
+          if (peer && Array.isArray(patch.p) && Number.isInteger(seq) && seq <= peer.lastSeq) return;
+          addOrChange(message.id, patch);
+          peer = everyone.get(message.id);
+          if (peer && Array.isArray(patch.p) && patch.p.length === 8 &&
+              Number.isFinite(message.serverNow)) {
+            peer.lastSeq = Number.isInteger(seq) ? seq : peer.lastSeq + 1;
+            peer.samples.push({ t: message.serverNow, p: patch.p.slice() });
+            if (peer.samples.length > 16) peer.samples.splice(0, peer.samples.length - 16);
+          } else if (peer && patch.p === null) {
+            peer.samples.length = 0;
+          }
           notify();
+        } else if (message.type === 'time_pong') {
+          const received = Date.now() / 1000;
+          const sent = Number(message.t0), server = Number(message.serverNow);
+          const rtt = received - sent;
+          if (Number.isFinite(sent) && Number.isFinite(server) && rtt >= 0 && rtt < 2) {
+            const sample = { rtt, offset: server - (sent + received) / 2 };
+            clock.samples.push(sample);
+            if (clock.samples.length > 12) clock.samples.shift();
+            const best = clock.samples.reduce((a, b) => b.rtt < a.rtt ? b : a);
+            // Las muestras de menor RTT sufren menos sesgo por retardo de red.
+            clock.offset = clock.valid ? clock.offset * 0.7 + best.offset * 0.3 : best.offset;
+            clock.rtt = clock.valid ? clock.rtt * 0.7 + rtt * 0.3 : rtt;
+            clock.jitter = Math.max(0, Math.abs(rtt - clock.rtt));
+            clock.valid = true;
+            notify();
+          }
         }
       });
       ws.addEventListener('error', () => {
@@ -97,6 +135,7 @@
       });
       ws.addEventListener('close', () => {
         established = false;
+        if (syncInterval !== null) { clearInterval(syncInterval); syncInterval = null; }
         if (!completed) { completed = true; reject(new Error('El servidor cerró la conexión')); }
         if (!intentionalClose) for (const fn of lostListeners) { try { fn(); } catch (err) { console.warn(err); } }
       });

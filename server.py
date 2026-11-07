@@ -170,7 +170,7 @@ async def websocket_handler(request):
                 used_slots = {state["slot"] for state in room.values()}
                 slot = next(n for n in range(1, MAX_PLAYERS + 1) if n not in used_slots)
                 previous = [peer_view(pid, state) for pid, state in room.items()]
-                room[peer_id] = {"ws": ws, "slot": slot, "presence": {}}
+                room[peer_id] = {"ws": ws, "slot": slot, "presence": {}, "seq": 0}
                 if name not in sessions:
                     sessions[name] = new_session(peer_id)
                 await ws.send_json({"type": "joined", "id": peer_id,
@@ -216,9 +216,20 @@ async def websocket_handler(request):
                             s["winner"] = peer_id
                             s["finishAt"] = time.time() + FINISH_GRACE
                         await publish_state(room_name)
-                await relay(room_name, {"type": "peer_presence", "id": peer_id, "patch": update}, exclude=peer_id)
+                # Numeración por emisor y marca de tiempo del servidor: permiten
+                # interpolar snapshots sin depender del momento de llegada.
+                if isinstance(update.get("p"), list):
+                    state["seq"] += 1
+                await relay(room_name, {"type": "peer_presence", "id": peer_id,
+                                        "patch": update, "seq": state["seq"],
+                                        "serverNow": time.time()}, exclude=peer_id)
             elif typ == "command" and room_name and peer_id in rooms.get(room_name, {}):
                 await handle_command(room_name, peer_id, data)
+            elif typ == "time_ping" and room_name and peer_id:
+                t0 = data.get("t0")
+                if type(t0) in (int, float) and math.isfinite(t0):
+                    await ws.send_json({"type": "time_pong", "t0": t0,
+                                        "serverNow": time.time()})
             elif typ == "ping" and room_name:
                 await ws.send_json({"type": "pong"})
     finally:
