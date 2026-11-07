@@ -178,6 +178,7 @@ body {
     <div class="tools">
       <label class="vol" title="Volumen">Vol <input id="volSlider" type="range" min="0" max="100" step="1" value="100" aria-label="Volumen"></label>
       <button class="chip" id="muteBtn" type="button" aria-pressed="false">Sonido: sí</button>
+      <button class="chip" id="ecoBtn" type="button" aria-pressed="false" title="Gráficos bajos: 30 cuadros por segundo y 65% de la resolución, para que la PC/celu se caliente menos">Gráficos: normal</button>
     </div>
   </header>
 
@@ -2554,10 +2555,20 @@ function paintSelBg(g, w, h, i) {
   const fy = Math.round(h * 0.74); g.fillStyle = 'rgba(0,0,0,.28)'; g.fillRect(0, fy, w, h - fy);
   const cw = w / 17.5; for (let k = 0; k < 18; k++) { g.fillStyle = k % 2 ? 'rgba(255,255,255,.55)' : 'rgba(0,0,0,.55)'; g.fillRect(k * cw, h - 18, cw, 18); }
 }
+/* Gráficos: NORMAL (60 cuadros, resolución completa) o BAJO (30 cuadros y 65% de resolución) para que la máquina se caliente menos. */
+const PERF = { eco: false, dpr: Math.min(window.devicePixelRatio || 1, 1.75) };
+try { PERF.eco = localStorage.getItem('cab_eco') === '1'; } catch (e) { }
+function perfDpr() { return PERF.eco ? 0.65 : PERF.dpr; }   // bajo: se renderiza a ~65% de la resolución de la pantalla (se ve más blando, pero consume bastante menos)
+function perfApply() { if (R3 && R3.renderer) { R3.renderer.setPixelRatio(perfDpr()); resize(); } }
+function setEco(on) {
+  PERF.eco = !!on; try { localStorage.setItem('cab_eco', on ? '1' : '0'); } catch (e) { }
+  const b = $('ecoBtn'); if (b) { b.textContent = 'Gráficos: ' + (on ? 'bajo' : 'normal'); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+  perfApply();
+}
 function initScene() {
   const glBox = $('gl');
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+  renderer.setPixelRatio(perfDpr());
   glBox.appendChild(renderer.domElement);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xcfe6ff);
@@ -5132,14 +5143,20 @@ try {
   $('menu').hidden = false;
   if (lede) { lede.hidden = false; lede.style.display = 'block'; lede.textContent = 'No se pudo iniciar el motor 3D (' + (err && err.message ? err.message : err) + '). Probá recargar la página o usar otro navegador.'; }
 }
-let last = 0, accT = 0;
+let last = 0, accT = 0, lastDraw = 0;
+$('ecoBtn').addEventListener('click', () => setEco(!PERF.eco));
+setEco(PERF.eco);
 function frame(now) {
+  requestAnimationFrame(frame);
+  // Tope de cuadros: 60 (30 con gráficos bajos, 20 si la ventana no tiene el foco). En pantallas de 120/144 Hz esto reduce el trabajo a la mitad o menos.
+  const cap = PERF.eco ? 30 : (document.hasFocus() ? 60 : 20);
+  if (now - lastDraw < 1000 / cap - 2.5) return;
+  lastDraw = now;
   const dt = Math.min(0.25, (now - last) / 1000 || 0); last = now; accT += dt;
   const STEP = 1 / 60;
   while (accT >= STEP) { step(STEP); accT -= STEP; }
   touchUiSync();
   if (R3) { try { render(dt); } catch (e) { if (!frame.err) { frame.err = true; console.error(e); } } }
-  requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 window.__r500 = { S, P, NET, CARS, MP_CARS, CPU_CAR, keys, step, startRace, startRaceMP, cpuContact, frameAt, stepPlayer, drawHUD, get standings() { return mpStandings(); }, get remoteMeshes() { return remoteMeshes; }, get cars() { return cars; }, get L() { return L; }, get N() { return N; }, get raceT() { return raceT; }, KK, BB };
