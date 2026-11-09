@@ -1815,7 +1815,8 @@ function mpBackdrop(t, y0) {
 }
 function drawMpResults() {
   const m = S.mpr, t = m.t;
-  mpWall(t);
+  // Mismo wallpaper que SCOREBOARDS y el lobby multijugador.
+  mpBackdrop(t, 30);
   hx.fillStyle = '#c1161c'; rr(60, 26, 680, 320, 10); hx.fill(); hx.fillStyle = '#23262e'; rr(64, 30, 672, 312, 8); hx.fill();
   hx.fillStyle = '#12141a'; hx.fillRect(66, 32, 600, 22);
   hx.strokeStyle = '#2c303a'; hx.lineWidth = 2; hx.beginPath(); for (let x = 70; x < 660; x += 7) { hx.moveTo(x, 54); hx.lineTo(x + 14, 32); } hx.stroke();
@@ -4632,29 +4633,72 @@ function mpSend() {
     gas: !!inp.gas, brake: !!inp.brake, steer: clamp(inp.steer, -1, 1), gear: P.gear | 0 }); }
   catch (e) { if (!mpSend.warn) { mpSend.warn = true; console.warn('Input online', e); } }
 }
+// Proyección de la pose oficial con la misma respuesta de giro que la física local.
+// La anterior extrapolación rectilínea (v*sin(psi)*age) hacía que cada snapshot
+// empujara el coche contra la dirección del jugador al tomar una curva.
+// Solo calcula coordenadas temporales: NO modifica la física ni manda poses al server.
+function mpProjectOwnPose(p, age) {
+  const q = { dist: p[0], d: p[1], v: p[2], psi: p[3], phi: p[4] };
+  if (age <= 0) return q;
+  const inp = readInput(), steer = P.steer;
+  const n = Math.ceil(age * 60), dt = age / n;
+  const gear = clamp(p[8] | 0, 0, 3);
+  for (let i = 0; i < n; i++) {
+    const f = frameAt(q.dist), k = f.k;
+    const slipping = inp.brake && q.v > 27 && Math.abs(steer) > 0.20;
+    let cap = 28 + 9.5 * Math.abs(Math.sin(f.b));
+    if (inp.brake) cap *= slipping ? 0.65 : 0.78;
+    if (inp.gas && gear < 2 && q.v > 12) cap *= 0.85;
+    const maxTurn = cap / Math.max(q.v, 12);
+    let omega = steer * maxTurn * 0.98 + (1 - Math.abs(steer)) * (slipping ? -1.7 : -3.2) * (q.phi - q.psi);
+    if (q.v > 35) {
+      if (inp.brake) omega += steer * 0.45 * Math.min(1, q.v / 60);
+      else if (!inp.gas) omega += steer * 0.24;
+    }
+    const u = q.v * Math.cos(q.psi);
+    const grip = clamp((slipping ? 2.6 : 7) * (q.phi - q.psi), -maxTurn, maxTurn);
+    q.phi += (omega + k * u) * dt;
+    q.psi += (grip + k * u) * dt;
+    const slip = q.phi - q.psi;
+    if (Math.abs(slip) > 0.78) q.phi = q.psi + Math.sign(slip) * 0.78;
+    q.dist += q.v * Math.cos(q.psi) * dt / Math.max(0.3, 1 + k * q.d);
+    q.d += q.v * Math.sin(q.psi) * dt;
+    const wall = WALL - CAR_WD / 2;
+    if (Math.abs(q.d) > wall) {
+      q.d = Math.sign(q.d) * wall;
+      if (q.psi * q.d > 0) { q.psi *= -0.15; q.phi = q.psi + (q.phi - q.psi) * 0.4; }
+    }
+  }
+  return q;
+}
 function mpReconcile(dt) {
   if (!S.mp || S.mode !== 'race' || !NET.r || !NET.r.authoritative) return;
   const auth = NET.r.authoritative();
   if (!auth || !NET.state || auth.p.length < 12) return;
   const p = auth.p;
-  const age = clamp(mpNow() - auth.serverNow, 0, 0.18);
-  // Ligeramente adelantar el snapshot para compensar la latencia de la red;
-  // el auto local sigue usando la física original en cada cuadro.
-  const targetDist = p[0] + p[2] * Math.cos(p[3]) * age /
-    Math.max(0.3, 1 + frameAt(p[0]).k * p[1]);
-  const targetD = clamp(p[1] + p[2] * Math.sin(p[3]) * age, -WALL + CAR_WD/2, WALL - CAR_WD/2);
-  const gap = targetDist - P.dist, lateral = targetD - P.d;
-  // Errores muy grandes (volver de pestaña suspendida / choque) se corrigen
-  // enseguida; los pequeños no producen teletransportes visibles.
+  const age = clamp(mpNow() - auth.serverNow, 0, 0.22);
+  // Adelantar la pose del servidor respetando el giro local, en lugar de
+  // arrastrar el auto hacia una extrapolación recta mientras está doblando.
+  const target = mpProjectOwnPose(p, age);
+  const gap = target.dist - P.dist, lateral = target.d - P.d;
+  const turning = Math.abs(readInput().steer) > 0.01;
+  // Tras un choque o una pestaña suspendida el servidor sigue siendo autoridad.
+  // Para desvíos normales, una corrección suave evita la sensación de patinaje.
   if (Math.abs(gap) > 12 || Math.abs(lateral) > 5) {
-    P.dist = targetDist; P.d = targetD; P.v = p[2]; P.psi = p[3]; P.phi = p[4];
+    P.dist = target.dist; P.d = target.d; P.v = target.v;
+    P.psi = target.psi; P.phi = target.phi;
   } else {
-    const factor = 1 - Math.exp(-dt * (Math.abs(gap) > 2.5 ? 15 : 7.5));
-    P.dist += gap * factor;
-    P.d += lateral * factor;
-    P.v += (p[2] - P.v) * Math.min(1, dt * 5);
-    P.psi += (p[3] - P.psi) * Math.min(1, dt * 3);
-    P.phi += (p[4] - P.phi) * Math.min(1, dt * 3);
+    const alongRate = Math.abs(gap) > 2.5 ? 13 : (turning ? 4.5 : 7.0);
+    const sideRate = Math.abs(lateral) > 2.5 ? 10 : (turning ? 3.5 : 6.0);
+    P.dist += gap * (1 - Math.exp(-dt * alongRate));
+    P.d += lateral * (1 - Math.exp(-dt * sideRate));
+    P.v += (target.v - P.v) * Math.min(1, dt * 5);
+    // Mientras gira, el volante tiene prioridad perceptiva sobre un snapshot
+    // atrasado. Al soltarlo, vuelve a alinearse con la pose oficial.
+    const yawRate = turning ? 1.1 : 3.0;
+    const angleDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+    P.psi += angleDiff(target.psi, P.psi) * (1 - Math.exp(-dt * yawRate));
+    P.phi += angleDiff(target.phi, P.phi) * (1 - Math.exp(-dt * yawRate));
   }
   if (p[10] > NET.lastHit) {
     // Un mismo contacto confirmado por servidor se muestra una sola vez.
