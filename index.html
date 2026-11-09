@@ -249,6 +249,7 @@ body {
     <li><kbd>&#8592;</kbd><kbd>&#8594;</kbd>Girar</li>
     <li><kbd>Z</kbd><kbd>X</kbd>Bajar / subir marcha (manual)</li>
     <li><kbd>V</kbd><kbd>1</kbd>–<kbd>4</kbd>Cámara</li>
+    <li><kbd>H</kbd>Mantener: vista trasera elevada</li>
     <li><kbd>ESPACIO</kbd>Frenar (igual que ↓)</li>
     <li><kbd>P</kbd>Pausa</li>
   </ul>
@@ -452,12 +453,257 @@ function frameAt(s) {
   return FR;
 }
 const cdiff = v => wrap(v + L / 2, L) - L / 2;
+/* =====================================================================
+   PIT (solo Arcade / Free): carril paralelo a la recta de meta, a la derecha, con rampa de entrada y de salida.
+   El juego NO se detiene: el reloj, los rivales y las vueltas siguen corriendo mientras el auto está en boxes.
+   Todas las posiciones del pit son relativas a la línea de meta (0): negativo = antes de la meta.
+   ===================================================================== */
+const PIT = { on: false, in0: -290, in1: -190, ex0: 130, ex1: 330, lane: 23.6, out: 31.2, sep: 17.6, box: -20, bay0: -180, bayW: 20, bays: 16, limit: 30, stopT: 4.6, TT: -1, vis: null, lastT: -1 };
+const pitSm = u => { u = u < 0 ? 0 : u > 1 ? 1 : u; return u * u * (3 - 2 * u); };
+const pitRel = s => wrap(s + L / 2, L) - L / 2;
+function pitOutAt(s) {   // borde exterior del asfalto del pit (se abre en una rampa de entrada y se cierra en la de salida)
+  const r = pitRel(s);
+  if (r < PIT.in0 || r > PIT.ex1) return WALL;
+  if (r < PIT.in1) return WALL + (PIT.out - WALL) * pitSm((r - PIT.in0) / (PIT.in1 - PIT.in0));
+  if (r <= PIT.ex0) return PIT.out;
+  return WALL + (PIT.out - WALL) * (1 - pitSm((r - PIT.ex0) / (PIT.ex1 - PIT.ex0)));
+}
+// Misma elevación que la malla de asfalto de la rampa (pitStatic).
+// La física de circulación permanece intacta; el auto y la cámara se apoyan
+// visualmente en el pavimento que está realmente dibujado, aun si NO entra a reparar.
+function pitRoadRaiseAt(s, d) {
+  const r = pitRel(s), s0 = PIT.ex0 - 110, s1 = PIT.ex1 + 90;
+  if (r < s0 || r > s1 || d < WALL + 0.06) return 0;
+  const spread = Math.max(0, Math.min(pitSm((r - s0) / 75), 1 - pitSm((r - PIT.ex1) / (s1 - PIT.ex1))));
+  const outer = WALL + 0.12 + (46 - WALL - 0.12) * spread;
+  if (d > outer) return 0;
+  const f = frameAt(s);
+  const yTrack = f.cy + f.ry * d + f.uy * 0.012;
+  return Math.max(0, (-0.042 - yTrack) / Math.max(0.15, f.uy));
+}
+function pitRoadRaise(st) {
+  if (!PIT.on || S.mp || (S.mode !== 'race' && S.mode !== 'countdown')) return 0;
+  // Muestreamos cuatro ruedas; si una pasa sobre la unión elevada,
+  // la carrocería acompaña en lugar de dejar que el asfalto la atraviese.
+  let top = 0;
+  for (const ds of [-1.65, 1.65]) for (const dd of [-0.80, 0.80])
+    top = Math.max(top, pitRoadRaiseAt(st.dist + ds, st.d + dd));
+  return top;
+}
+/* Un servicio como máximo por vuelta completa. Volver marcha atrás y cruzar
+   otra vez la entrada NO habilita un segundo servicio; en la vuelta siguiente sí.
+   En la última vuelta no hay servicio, pero la calle de boxes sigue transitable. */
+function pitAvailable() {
+  if (!PIT.on || S.mp || P.finished || P.lapsDone >= LAPS - 1) return false;
+  if (P.pitLap === P.lapsDone) return false;
+  // No permitir que crucen GOAL, retrocedan y vuelvan a entrar sin haber
+  // recorrido una vuelta completa desde la última atención.
+  if (Number.isFinite(P.pitServiceDist) && P.dist - P.pitServiceDist < L - 60) return false;
+  return true;
+}
+// La entrada visible es una rampa real: sin cuellos de botella ni cierres
+// invisibles. El muro exterior se abre gradualmente siguiendo el asfalto.
+function pitTrackRight(s) {
+  if (!PIT.on || S.mp) return WALL;
+  const r = pitRel(s);
+  return ((r >= PIT.in0 && r < PIT.in1) || (r > PIT.ex0 && r <= PIT.ex1)) ? pitOutAt(s) : WALL;
+}
+// La punta del separador sí es física, pero se trata suavemente para evitar
+// que un contacto leve en la bifurcación sacuda el coche hacia la meta.
+function pitSoft(s) {
+  if (!PIT.on || S.mp) return false;
+  const r = pitRel(s);
+  return r >= PIT.in1 - 7 && r <= PIT.in1 + 12;
+}
+function pitEnter(dt) {
+  if (!PIT.on || S.mp || S.mode !== 'race' || P.pit || P.tumble > 0 || P.finished) return;
+  if (!pitAvailable()) { P.pitDwell = 0; return; }
+  const r = pitRel(P.dist);
+  // Detección separada de la geometría: la rampa es amplia, pero el juego
+  // toma el control SÓLO tras superar la punta del separador y circular
+  // inequívocamente por el carril de boxes, no al rozar la entrada.
+  const alreadyInPit = r >= PIT.in1 + 8 && r < PIT.box - 95 &&
+    P.d >= PIT.sep + CAR_WD / 2 + 0.28 && P.v >= 0;
+  P.pitDwell = alreadyInPit ? (P.pitDwell || 0) + (dt || 1 / 60) : 0;
+  if (P.pitDwell >= 0.16) {
+    P.pit = { st: 'in', t: 0, r0: r, d0: P.d, vNew: P.v, vPrev: P.v, repaired: false };
+    P.pitLap = P.lapsDone;
+    P.pitServiceDist = P.dist;
+    P.pitDwell = 0;
+    PIT.TT = -1; P.inv = Math.max(P.inv, 0.5);
+    beep(880, 0.08, 'square', 0.05); setTimeout(() => beep(1320, 0.12, 'square', 0.05), 90);
+  }
+}
+// Última vuelta (o servicio ya usado): el pit es transitable, pero el coche
+// que lo atravesó debe poder volver al circuito SIN reparar ni teletransportarse.
+// La asistencia modifica acelerador y volante reales, no P.d ni P.dist.
+function pitBypassDrive(dt) {
+  const r = pitRel(P.dist), f = frameAt(P.dist + P.v * 0.45);
+  const begin = PIT.ex0 - 42, end = PIT.ex1 - 25;
+  const u = clamp((r - begin) / Math.max(1, end - begin), 0, 1);
+  const targetD = lerp(PIT.lane, 11.6, pitSm(u));
+  const slope = (11.6 - PIT.lane) * 6 * u * (1 - u) / Math.max(1, end - begin);
+  const heading = clamp(Math.atan(slope) - 0.090 * (P.d - targetD) - 0.12 * P.psi, -0.30, 0.14);
+  const maxTurn = 30 / Math.max(P.v, 12);
+  const steer = clamp((-f.k * P.v + 3.2 * (heading - P.phi) + 0.90 * (heading - P.psi)) / maxTurn, -1, 1);
+  const targetV = r < PIT.ex0 + 65 ? 35 : 50;
+  return { gas: P.v < targetV - 1.2, brake: P.v > targetV + 2, steer };
+}
+function pitBypassControl(dt, inp) {
+  if (!PIT.on || S.mp || P.pit || (S.mode !== 'race' && S.mode !== 'finish')) return inp;
+  const r = pitRel(P.dist);
+  // Se marca la circulación real por boxes antes de GOAL, de forma que la
+  // incorporación siga activa aunque la carrera termine al cruzar la meta.
+  if (r >= PIT.in1 + 8 && r < PIT.ex0 - 65 &&
+      P.d > PIT.sep + 0.25 && !pitAvailable()) P.pitBypass = true;
+  if (!P.pitBypass) return inp;
+  if (r >= PIT.ex1 - 15 && P.d < 14 && Math.abs(P.psi) < 0.18) {
+    P.pitBypass = false; return inp;
+  }
+  if (r > PIT.ex1 + 60) { P.pitBypass = false; return inp; }
+  if (r < PIT.ex0 - 95) return inp; // rueda libre en la recta de boxes
+  return pitBypassDrive(dt);
+}
+function pitDrive(dt) {   // control automático dentro del pit: devuelve el input y deja en q.vNew la velocidad deseada
+  const q = P.pit, r = pitRel(P.dist), PL = PIT.limit;
+  let vt = 0, lat = PIT.lane;
+  if (q.st === 'in') {
+    const gap = PIT.box - r, offset = PIT.lane - P.d;
+    // Referencia siempre calculada desde la POSICIÓN ACTUAL, no desde d0:
+    // evita sobrecorrecciones si entra cruzado o pegado al borde del carril.
+    // El volante mueve el auto de forma física; no tocamos P.d ni P.dist.
+    const approach = clamp(gap * 0.58, 9.0, 29);
+    const desired = Math.atan2(offset, approach);
+    q.heading = clamp(desired - 0.16 * P.psi, -0.25, 0.25);
+    // Protección del separador y del muro exterior (margen real del auto).
+    const lo = PIT.sep + CAR_WD / 2 + 0.55;
+    const hi = PIT.out - CAR_WD / 2 - 0.55;
+    if (P.d < lo + 0.30) q.heading = Math.max(q.heading, 0.085);
+    if (P.d > hi - 0.30) q.heading = Math.min(q.heading, -0.085);
+    // Frenada anticipada + alineación: llegar lento, centrado y casi recto.
+    // A máxima velocidad queda espacio para frenar tras detectar la entrada.
+    vt = Math.min(PL, Math.sqrt(2 * 4.8 * Math.max(0, gap)));
+    if (Math.abs(offset) > 2.7) vt = Math.min(vt, 12);
+    else if (Math.abs(offset) > 0.65) vt = Math.min(vt, 17);
+    if (gap < 15 && Math.abs(offset) > 0.25) vt = Math.min(vt, 6.5);
+    if (gap < 4) vt = Math.min(vt, 3.7);
+    if (gap <= 0.70 && Math.abs(offset) > 0.17) vt = Math.min(vt, 2.1);
+  } else if (q.st === 'out') {
+    // Incorporación con dirección física: trayectoria en arco más larga y suave,
+    // sin deslizar el coche de costado al devolver el control.
+    vt = r < PIT.ex0 ? PL : 66;
+    const begin = PIT.ex0 + 2, end = PIT.ex1 + 50;   // empieza recién cuando termina el separador y se incorpora en un arco largo
+    const u = clamp((r - begin) / (end - begin), 0, 1);
+    lat = lerp(PIT.lane, 10.9, pitSm(u));
+    const slope = (10.9 - PIT.lane) * 6 * u * (1 - u) / (end - begin);
+    const heading = clamp(Math.atan(slope) - 0.090 * (P.d - lat), -0.30, 0.16);
+    q.heading = heading;
+  }
+  const fa = frameAt(P.dist + P.v * 0.5), ka = fa.k, maxTurn = 30 / Math.max(P.v, 12);
+  const want = q.st === 'out'
+    ? -ka * P.v + 2.9 * (q.heading - P.phi) + 0.65 * (q.heading - P.psi)
+    : -ka * P.v + 3.0 * (q.heading - P.phi) + 0.90 * (q.heading - P.psi);
+  const dv = vt - P.v, a = dv > 0 ? ((q.st === 'out' && r >= PIT.ex0) ? 15 : 11) : (q.st === 'in' ? 36 : 28);
+  q.vPrev = P.v; q.vNew = Math.max(0, P.v + clamp(dv, -a * dt, a * dt));
+  return { gas: dv > 0.5, brake: dv < -3, steer: clamp(want / maxTurn, -1, 1) };
+}
+function pitAfter(dt) {   // después de stepPlayer: fija la velocidad, avanza la secuencia y reparte los eventos
+  const q = P.pit, r = pitRel(P.dist);
+  P.v = q.vNew; P.acc = clamp((q.vNew - q.vPrev) / Math.max(dt, 1e-3), -30, 15);
+  P.thr = q.st === 'out' ? 1 : 0.1; P.braking = q.st === 'in' && P.acc < -6;
+  P.inv = Math.max(P.inv, 0.3); P.sv = 0; P.wallT = 0;
+  if (q.st === 'in') {
+    const gap = PIT.box - r;
+    const err = Math.abs(P.d - PIT.lane), yaw = Math.abs(P.psi);
+    // Parar solo cuando de verdad está al lado del box. No se reajusta ninguna
+    // coordenada: ni longitudinal ni lateral. Si llegó mal y pasó el garage,
+    // cancelar el servicio en ese mismo carril (jamás reaparecer en el box).
+    if (gap <= 0.60 && gap >= -1.10 && err < 0.36 && yaw < 0.12 && P.v < 5.5) {
+      P.v = 0; q.vNew = 0; q.st = 'stop'; q.t = 0; PIT.TT = 0; PIT.lastT = -1;
+      P.psi = 0; P.phi = 0; P.steer = 0; P.acc = 0; P.braking = true;
+    } else if (gap < -2.5) {
+      // Aproximación fallida: devuelve el manejo sin service ni teletransporte.
+      pitAbort();
+      S.pitTail = S.pitW || 0;
+    }
+  } else if (q.st === 'stop') {
+    q.t += dt; PIT.TT = q.t; P.v = 0; q.vNew = 0; P.acc = 0; P.braking = true; P.thr = 0;
+    // No desplazar la carrocería durante la reparación: ya quedó alineada.
+    P.psi = 0; P.phi = 0; P.steer = 0;
+    if (!q.repaired && q.t >= 2.7) {   // el auto queda como nuevo: se arregla la carrocería
+      q.repaired = true; P.damage = 0; P.damageSide = 1; P.damagePulse = 0; P.crash = 0; P.damageCD = 0;
+      for (const k in P.dmg) P.dmg[k] = 0;
+      beep(1560, 0.12, 'square', 0.05); setTimeout(() => beep(2080, 0.18, 'square', 0.05), 110);
+    }
+    if (q.t >= PIT.stopT) { q.st = 'out'; q.t = 0; }
+  } else {
+    q.t += dt; PIT.TT = PIT.stopT + q.t;
+    // Al llegar a la recta el propio volante ya ha centrado la trompa.
+    // Solamente liberamos controles cuando el coche está en el circuito,
+    // lejos de la pared y con un ángulo que no provoque un tirón.
+    if (r >= PIT.ex1 + 36 && P.d < 12.8 && Math.abs(P.phi) < 0.08 && Math.abs(P.psi) < 0.08) {
+      P.pit = null; P.pitLift = 0;
+      S.pitTail = S.pitW || 0;   // la cámara sigue desvaneciéndose desde donde estaba (sin saltos)
+    }
+  }
+}
+function pitAbort() {   // si la carrera termina estando en boxes
+  if (!P.pit) return;
+  P.pit = null; P.pitLift = 0; PIT.TT = -1; S.finLane = null; S.pitTail = 0;
+  // Mantener el auto donde está. La física normal conserva los límites
+  // del pit hasta su salida; no hay relocalización instantánea a la pista.
+}
+function pitTick(dt) {   // peso de la cámara de pit y cola de la animación al salir
+  if (P.pit && S.mode !== 'race') pitAbort();
+  // No saltar de cámara cinemática a cámara de carrera al recuperar los controles.
+  // El paneo termina progresivamente mientras el auto sale por la rampa y deja una
+  // pequeña cola al devolver el control, para que el cambio no sea brusco.
+  if (P.pit) S.pitCamSt = P.pit.st;   // el plano de cámara se mantiene hasta que se desvanece (si no, salta al soltar los controles)
+  let targetW = 0;
+  if (P.pit && P.pit.st !== 'out') targetW = 1;
+  else if (P.pit) {
+    const u = (pitRel(P.dist) - (PIT.ex0 - 38)) / (PIT.ex1 - PIT.ex0 + 32);
+    targetW = 1 - pitSm(u);
+  } else if ((S.pitTail || 0) > 0) {
+    S.pitTail = Math.max(0, S.pitTail - dt * 1.55);
+    targetW = S.pitTail;
+  }
+  const camEase = 1 - Math.exp(-dt * (targetW > (S.pitW || 0) ? 3.1 : 2.2));
+  S.pitW = clamp((S.pitW || 0) + (targetW - (S.pitW || 0)) * camEase, 0, 1);
+  if (S.pitW < 0.002) { S.pitW = 0; if (!P.pit) S.pitCamSt = null; }
+  if (!P.pit && PIT.TT >= 0) { PIT.TT += dt; if (PIT.TT > PIT.stopT + 2.6) PIT.TT = -1; }
+  pitAnimate(dt);
+}
+
 
 /* ---------------------------------------------------------------------
    ESTADO
    --------------------------------------------------------------------- */
 const keys = { up: false, down: false, left: false, right: false };
 const touch = { up: false, down: false, left: false, right: false };
+// No se permite cambiar la cámara hasta el GO, ni durante vuelcos/trompos.
+// La vista H es temporal: nunca altera S.view.
+let rearHoldH = false;
+function raceCameraUnlocked() {
+  return S.mode === 'race' && !S.pm && !S.paused &&
+    S.crashView == null && !(P.tumble > 0) && !(P.flip > 0.02) && !P.finished && !P.pit;
+}
+// Cambios al estilo arcade: rápidos y discretos, sin un travelling que atraviese el auto.
+// Entre cámaras de la misma familia (capó/parachoques o traseras), un ajuste de
+// 0.18 s. Al pasar de capó a exterior, corte directo con un asentamiento mínimo.
+// H continúa instantánea y mantiene intacta la cámara elegida.
+function selectRaceCamera(view) {
+  if (!raceCameraUnlocked()) return;
+  view = clamp(view | 0, 0, VIEWS.length - 1);
+  if (S.view === view) return;
+  const prev = S.view, last = S.camPose;
+  const nearby = !!VIEWS[prev].hood === !!VIEWS[view].hood;
+  S.camBlend = !rearHoldH && last ? {
+    from: { ...last }, t: 0, duration: nearby ? 0.18 : 0.12, nearby
+  } : null;
+  S.view = view;
+  applyView();
+}
 const S = { mode: 'menu', paused: false, trans: 'auto', view: 1, muted: false, cd: 0, t: 0, finT: 0, finLane: null, finCruise: 0, go: 0, introT: 0, resultPlace: 20, demoT: 0, sel: false, holdFov: null, curve: null, cs: null, course: 0 };
 const P = {};
 const DEMO = { k: -1, cyc: -1, anchor: null, rival: null, away: null };
@@ -476,7 +722,9 @@ const TAGS = ['RACING', 'SPEEDWAY', 'MOTOR CLUB', 'FULL BOOST', 'ROAD KING', 'TH
 const PLAYER_DEF = { color: PBLUE, sec: '#e1252b', accent: '#16c878', text: '#ffe12a', num: '41', spons: 'GALLOP', tag: 'HORNET', isPlayer: true };
 
 function resetPlayer() {
-  Object.assign(P, { dist: 0, d: 3, phi: 0, psi: 0, v: 0, steer: 0, gear: 0, shiftT: 0, lapsDone: 0, lapStart: 0, lapTimes: [], time: START_TIME, bestLap: Infinity, dmg: { fl: 0, fr: 0, rl: 0, rr: 0 }, hitCD: 0, recoil: 0, recoilT: 0, damage: 0, damageCD: 0, damageSide: 1, damagePulse: 0, crash: 0, tumble: 0, flip: 0, inv: 0, wallT: 0, sv: 0, braking: false, rpm: 0, thr: 0, place: 0, finished: false, acc: 0 });
+  Object.assign(P, { dist: 0, d: 3, phi: 0, psi: 0, v: 0, steer: 0, gear: 0, shiftT: 0, lapsDone: 0, lapStart: 0, lapTimes: [], time: START_TIME, bestLap: Infinity, dmg: { fl: 0, fr: 0, rl: 0, rr: 0 }, hitCD: 0, recoil: 0, recoilT: 0, damage: 0, damageCD: 0, damageSide: 1, damagePulse: 0, crash: 0, tumble: 0, flip: 0, inv: 0, wallT: 0, sv: 0, braking: false, rpm: 0, thr: 0, place: 0, finished: false, acc: 0, pit: null, pitLift: 0, roadRaise: 0, pitLap: -99, pitServiceDist: -Infinity, pitDwell: 0, pitBypass: false });
+  PIT.TT = -1; PIT.lastT = -1; S.pitW = 0; S.pitTail = 0; S.pitCamSt = null;
+  S.camPose = null; S.camBlend = null;
 }
 function makeCars() {
   cars = [];
@@ -813,11 +1061,18 @@ function stepPlayer(dt, inp) {
   if (P.recoilT > 0) { P.recoilT -= dt; P.dist -= P.recoil * dt; }   // retroceso del golpe
   if (P.sv) P.d += P.sv * dt;
 
-  /* muros: vuelca solo con un golpe muy fuerte a mucha velocidad */
-  const lim = WALL - CAR_WD / 2;
-  if (Math.abs(P.d) > lim) {
-    const sgn = Math.sign(P.d), vHit = P.v, shoveIn = Math.max(0, (P.sv || 0) * sgn), into = Math.max(P.v * Math.sin(P.psi) * sgn, shoveIn);
-    P.d = sgn * lim;
+  /* muros: la entrada está abierta para TODOS, aunque el pit no atienda.
+     Entre la entrada y la salida el separador divide en dos carriles físicos:
+     pista (izquierda) y pit (derecha), independientemente de P.pit. */
+  const pr = PIT.on && !S.mp ? pitRel(P.dist) : -1e9;
+  const atDivider = pr >= PIT.in1 && pr < PIT.ex0;
+  const onPitSide = atDivider && (P.pit || P.d > PIT.sep);
+  const rLim = (P.pit || onPitSide ? pitOutAt(P.dist) : pitTrackRight(P.dist)) - CAR_WD / 2;
+  const lLim = onPitSide ? PIT.sep + CAR_WD / 2 : -(WALL - CAR_WD / 2);
+  if (P.d > rLim || P.d < lLim) {
+    const sgn = P.d > rLim ? 1 : -1, lim = sgn > 0 ? rLim : -lLim, vHit = P.v, shoveIn = Math.max(0, (P.sv || 0) * sgn);
+    const into = (P.pit || (atDivider && pitSoft(P.dist)) || (sgn > 0 && pitSoft(P.dist))) ? 0 : Math.max(P.v * Math.sin(P.psi) * sgn, shoveIn);
+    P.d = sgn > 0 ? lim : lLim;
     if (into > 0) {
       P.v = Math.max(0, P.v - into * 0.55 - P.v * 0.03);
       P.psi = -P.psi * 0.15; P.phi = P.psi + (P.phi - P.psi) * 0.4; P.steer *= 0.5; P.wallT = 0.35;
@@ -1501,6 +1756,7 @@ function mpResOpen() {
   S.mpr = { t: 0, rows: rows.slice(0, 8) };
 }
 function mpResTick(dt) { const m = S.mpr; m.t += dt; if (m.t >= MPR_TIME) { S.mpr = null; showMenu(); } }
+function mpWall(t) { hx.fillStyle = '#000'; hx.fillRect(0, 0, HW, HH); mmBackdrop(0, 40, HW, 366, t); mmBand(0, 40); mmBand(406, HH); }   // mismo fondo naranja del menú principal
 function mpBackdrop(t, y0) {
   const bg = hx.createLinearGradient(0, 0, 0, HH); bg.addColorStop(0, '#8fcad8'); bg.addColorStop(1, '#58a3b6'); hx.fillStyle = bg; hx.fillRect(0, 0, HW, HH);
   hx.save(); hx.globalAlpha = 0.13; hx.fillStyle = '#fff'; hx.font = 'italic 900 34px Georgia, serif'; hx.textAlign = 'left'; hx.textBaseline = 'middle';
@@ -1509,7 +1765,7 @@ function mpBackdrop(t, y0) {
 }
 function drawMpResults() {
   const m = S.mpr, t = m.t;
-  mpBackdrop(t, 30);
+  mpWall(t);
   hx.fillStyle = '#c1161c'; rr(60, 26, 680, 320, 10); hx.fill(); hx.fillStyle = '#23262e'; rr(64, 30, 672, 312, 8); hx.fill();
   hx.fillStyle = '#12141a'; hx.fillRect(66, 32, 600, 22);
   hx.strokeStyle = '#2c303a'; hx.lineWidth = 2; hx.beginPath(); for (let x = 70; x < 660; x += 7) { hx.moveTo(x, 54); hx.lineTo(x + 14, 32); } hx.stroke();
@@ -1643,7 +1899,7 @@ function sim(dt) {
       // Desenlace visual: el ganador posa; segundo derrapa, tercero choca,
       // cuarto o inferior vuelca. No influye en el orden del servidor.
       const c = S.cine, t = S.finT;
-      if (c && t > 3.3) {
+      if (c && t > 3.3 && !P.pitBypass) {
         if (c.place === 2) {
           inp.steer = clamp(Math.sin((t - 3.3) * 1.8) * 0.9, -1, 1);
           inp.brake = t < 5.4; inp.gas = t >= 5.4;
@@ -1655,8 +1911,12 @@ function sim(dt) {
     } else inp = autoDrive(26);
     P.inv = Math.max(P.inv, 0.3);
   }
+  if (racing && P.pit) { inp = pitDrive(dt); P.v = P.pit.vNew; }   // en boxes el auto va solo; el juego sigue corriendo
+  else inp = pitBypassControl(dt, inp); // pit cerrado: giro físico de regreso a pista, incluso al terminar en GOAL
   P.prevDist = P.dist; P.prevD = P.d;
   stepPlayer(dt, inp);
+  if (P.pit) pitAfter(dt); else if (racing) pitEnter(dt);
+  pitTick(dt);
   // Efectos físicos para la escena final, usando los mismos mecanismos del juego.
   if (S.mode === 'finish' && S.cine) {
     const c = S.cine, t = S.finT;
@@ -1684,7 +1944,9 @@ function sim(dt) {
   if (racing && S.mp) mpReconcile(dt);
 
   if (racing) {
-    raceT = S.mp && NET.state ? Math.max(0, mpNow() - NET.state.raceAt) : raceT + dt; P.time = S.mp && NET.state ? Math.max(0, NET.state.deadline - mpNow()) : P.time - dt;
+    raceT = S.mp && NET.state ? Math.max(0, mpNow() - NET.state.raceAt) : raceT + dt;
+    if (S.mp && NET.state) P.time = Math.max(0, NET.state.deadline - mpNow());
+    else if (!P.pit && !(S.pitTail > 0)) P.time -= dt; // Arcade: congela SOLO el contador superior desde PIT IN hasta devolver el control
     const officialLap = S.mp && NET.r && NET.r.authoritative && NET.r.authoritative();
     const lapNow = officialLap ? officialLap.p[5] : Math.floor(P.dist / L);
     if (!P.finished && lapNow > P.lapsDone) {
@@ -1717,6 +1979,8 @@ function sim(dt) {
   if (!S.mp && S.mode === 'finish' && S.finT >= SOLO_END_TOTAL) soloEnd();
 }
 function step(dt) {
+  // Pausa local: no avanzar ni el mundo ni el reloj que alimenta sus animaciones.
+  if (S.paused && !S.mp) return;
   S.t += dt;
   if (S.mp && NET.state && NET.state.phase === 'results') mpApplyResult(NET.state);
   if (S.mp && NET.r && NET.r.state()) {
@@ -1834,6 +2098,477 @@ let R3 = null; // {renderer, scene, camera, ...}
 const carMeshes = [];
 const remoteMeshes = [];
 let playerMesh = null;
+
+/* ---------- geometría del pit ---------- */
+function ribbonR(sA, sB, spec) {   // como ribbon(), pero solo entre dos distancias y con bordes que pueden depender de s
+  const n = Math.max(1, Math.ceil((sB - sA) / DS)), pos = [], uv = [], idx = [];
+  const val = (v, s) => typeof v === 'function' ? v(s) : v;
+  for (let i = 0; i <= n; i++) {
+    const s = sA + (sB - sA) * i / n, f = frameAt(s);
+    for (let e = 0; e < 2; e++) {
+      const d = val(e ? spec.d1 : spec.d0, s), h = val(e ? spec.h1 : spec.h0, s);
+      let y = f.cy + f.ry * d + f.uy * h;
+      if (spec.gy !== undefined && e === 1) y = spec.gy;
+      pos.push(f.cx + f.rx * d + f.ux * h, y, f.cz + f.rz * d + f.uz * h);
+      if (spec.along === 'u') uv.push((s - (spec.so || 0)) / spec.vs, spec.v0 + (spec.v1 - spec.v0) * e); else uv.push(e, s / spec.vs);
+    }
+    if (i < n) { const j = i * 2; idx.push(j, j + 1, j + 2, j + 1, j + 3, j + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  return g;
+}
+function pitFrameQuat(s, lookBack) {   // orientación del marco de pista en s (x = derecha, y = arriba, z = hacia atrás)
+  const f = frameAt(s);
+  return basisQuat(f.rx, f.ry, f.rz, f.ux, f.uy, f.uz, -f.tx, -f.ty, -f.tz);
+}
+// La puerta del box #41 cambia de color cuando elegimos transmisión o auto en FREE.
+function pitPaintDoor(g, w, h, pri, sec, acc, num, sponsor, darkText) {
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = '#dfe4ec'; g.fillRect(0, 0, w, h);
+  g.fillStyle = pri; g.fillRect(0, 0, w, 42);
+  g.fillStyle = sec; g.fillRect(0, 42, w, 10);
+  g.fillStyle = '#171a21'; g.fillRect(16, 54, w - 32, h - 54);
+  g.fillStyle = 'rgba(255,255,255,.08)';
+  for (let k = 0; k < 7; k++) g.fillRect(28 + k * 38, 60, 7, h - 68);
+  g.strokeStyle = 'rgba(255,255,255,.22)'; g.lineWidth = 3;
+  g.strokeRect(18, 58, w - 36, h - 70);
+  g.font = '900 28px Arial Black, Arial, sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle';
+  g.fillStyle = darkText ? '#171a21' : '#ffffff'; g.fillText(sponsor, 18, 21, w - 110);
+  g.textAlign = 'right'; g.fillStyle = String(num) === '41' ? (darkText ? '#101114' : '#ffffff') : acc; g.fillText(num, w - 20, 21);
+  g.fillStyle = 'rgba(255,255,255,.08)';
+  for (let yy = 68; yy < h - 14; yy += 18) g.fillRect(22, yy, w - 44, 4);
+}
+function pitApplyLook(car) {
+  if (!car) return;
+  if (PIT.mineDoor) {
+    const b = PIT.mineDoor, g = b.canvas.getContext('2d');
+    pitPaintDoor(g, b.canvas.width, b.canvas.height,
+      car.top || PLAYER_DEF.color, car.side || PLAYER_DEF.sec, car.edge || PLAYER_DEF.accent,
+      PLAYER_DEF.num, PLAYER_DEF.spons, !!car.dark);
+    b.texture.needsUpdate = true;
+  }
+  if (PIT.vis) {
+    const suit = parseInt((car.top || '#1f56c4').slice(1), 16);
+    const stripe = parseInt((car.side || '#ffd23f').slice(1), 16);
+    for (const m of PIT.vis.wm) {
+      if (m.suitMat) m.suitMat.color.setHex(suit);
+      if (m.stripeMat) m.stripeMat.color.setHex(stripe);
+    }
+  }
+}
+function pitStatic(c) {
+  const { scene, lam, wallMat, capMat, grassMat, renderer } = c;
+  const A = PIT.in0, B = PIT.ex1, wA = PIT.in1, wB = PIT.ex0, Lw = L;
+  const add = (g, m) => { const o = new THREE.Mesh(g, m); scene.add(o); return o; };
+  const wallSpec = { d0: WALL, h0: 0, d1: WALL, h1: 1.4, vs: 40, along: 'u', v0: 0.4375, v1: 1 };
+  const capSpec = { d0: WALL, h0: 1.4, d1: WALL + 0.9, h1: 1.4, vs: 40 };
+  // separador pista / pit: muro macizo de colores sólidos (hormigón + franja roja + tapa blanca), visible desde ambos lados
+  {
+    const solid = c => new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide });
+    const wConc = solid(0xdfe3ea), wRed = solid(0xd62839), wWht = solid(0xf6f8fb);
+    for (const d of [WALL, WALL + 0.9]) {
+      add(ribbonR(wA, wB, { d0: d, h0: -0.4, d1: d, h1: 0.5, vs: 40 }), wConc);
+      add(ribbonR(wA, wB, { d0: d, h0: 0.5, d1: d, h1: 0.95, vs: 40 }), wRed);
+      add(ribbonR(wA, wB, { d0: d, h0: 0.95, d1: d, h1: 1.4, vs: 40 }), wWht);
+    }
+    add(ribbonR(wA, wB, { d0: WALL, h0: 1.4, d1: WALL + 0.9, h1: 1.4, vs: 40 }), wWht);
+    for (const sEnd of [wA, wB]) {   // punta y final del muro
+      const f = frameAt(sEnd), pt = (d, h) => [f.cx + f.rx * d + f.ux * h, f.cy + f.ry * d + f.uy * h, f.cz + f.rz * d + f.uz * h];
+      add(quadGeo(pt(WALL, -0.4), pt(WALL + 0.9, -0.4), pt(WALL + 0.9, 1.4), pt(WALL, 1.4)), wRed);
+    }
+  }
+  add(ribbonR(PIT.ex1, Lw + PIT.in0, wallSpec), wallMat); add(ribbonR(PIT.ex1, Lw + PIT.in0, capSpec), capMat);
+  const tarmac = lam({ color: 0x5a5e69 }), concrete = lam({ color: 0x9aa0ab }), dark = lam({ color: 0x2b2e36 });
+  // al final del pit dejamos asfalto/apron en lugar de pasto, para que conecte mejor visualmente con la pista.
+  add(ribbonR(PIT.ex1, Lw + PIT.in0, { d0: WALL + 0.9, h0: 1.4, d1: WALL + 24, h1: 0, gy: -0.1, vs: 30 }), tarmac);
+  add(ribbonR(A, B, { d0: WALL, h0: 0.03, d1: pitOutAt, h1: 0.03, vs: 30 }), tarmac);
+  // Pavimento continuo de banquina: la v38 dejaba todo el exterior de las
+  // rampas sin cubrir, mostrando el verde del terreno por debajo.
+  const apron = lam({ color: 0x777c86 });
+  for (const [sa, sb] of [[PIT.in0, PIT.in1], [PIT.ex0, PIT.ex1]]) {
+    add(ribbonR(sa, sb, {
+      d0: pitOutAt, h0: 0.035,
+      d1: s => Math.max(PIT.out + 9, pitOutAt(s) + 9.5), h1: 0.035, vs: 28
+    }), apron);
+  }
+  // El tramo de enlace con la pista continúa asfaltado después de la rampa.
+  // El suelo original es una gran textura de pasto, por eso esto no puede ser
+  // solo un cambio de color del muro: hay que agregar la geometría del suelo.
+  add(ribbonR(PIT.ex1, PIT.ex1 + 92, {
+    d0: WALL + 0.8, h0: 1.36,
+    d1: WALL + 44, h1: 0.0, gy: -0.075, vs: 35
+  }), apron);
+  // Pavimento de unión para la salida. En esta curva el peralte es negativo:
+  // a s~130..230 las bandas anteriores estaban debajo del suelo verde (y=-0.12).
+  // Esta malla recorta sólo el extremo enterrado y queda 7 cm por encima
+  // del terreno; la rampa se funde gradualmente con el asfalto del circuito.
+  {
+    const s0 = PIT.ex0 - 110, s1 = PIT.ex1 + 90, n = Math.ceil((s1 - s0) / 2);
+    const pos = [], uv = [], ids = [];
+    for (let i = 0; i <= n; i++) {
+      const sd = s0 + (s1 - s0) * i / n, f = frameAt(sd);
+      const appear = pitSm((sd - s0) / 75);
+      const disappear = 1 - pitSm((sd - PIT.ex1) / (s1 - PIT.ex1));
+      const spread = Math.max(0, Math.min(appear, disappear));
+      const outer = WALL + 0.12 + (46 - WALL - 0.12) * spread;
+      // Bandas longitudinales para que el borde quede sin huecos al curvarse.
+      for (let k = 0; k <= 6; k++) {
+        const d = lerp(WALL + 0.06, outer, k / 6);
+        const yTrack = f.cy + f.ry * d + f.uy * 0.012;
+        const y = Math.max(yTrack, -0.042); // plano verde: -0.12
+        pos.push(f.cx + f.rx * d + f.ux * 0.012, y, f.cz + f.rz * d + f.uz * 0.012);
+        uv.push(k / 6 * 2.6, sd / 22);
+      }
+      if (i < n) for (let k = 0; k < 6; k++) {
+        const a = i * 7 + k, b = (i + 1) * 7 + k;
+        ids.push(a, a + 1, b, a + 1, b + 1, b);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(ids); geo.computeVertexNormals();
+    const surf = new THREE.Mesh(geo, lam({ color: 0x656a74 }));
+    scene.add(surf);
+  }
+  add(ribbonR(wA, wB, { d0: PIT.out, h0: 0.03, d1: 40.4, h1: 0.03, vs: 30 }), concrete);
+  const skirt = (a, b, d, mat=concrete) => add(ribbonR(a, b, { d0: d, h0: -7, d1: d, h1: 0.03, vs: 30 }), mat);
+  skirt(A, wA, pitOutAt, tarmac); skirt(wA, wB, 40.4, concrete); skirt(wB, B, pitOutAt, tarmac);
+  [[A, wA], [wB, B]].forEach(([a, b]) => {
+    add(ribbonR(a, b, { d0: pitOutAt, h0: 0.03, d1: pitOutAt, h1: 1.0, vs: 40, along: 'u', v0: 0.4375, v1: 1 }), wallMat);
+    add(ribbonR(a, b, { d0: pitOutAt, h0: 1.0, d1: s => pitOutAt(s) + 0.5, h1: 1.0, vs: 40 }), capMat);
+  });
+  // Pintura al ras del asfalto, fuera de la huella de las ruedas del #41.
+  // Antes se levantaba 2 cm del pavimento y atravesaba visualmente los neumáticos.
+  const pitPaintH = 0.032; // pavimento: 0.030; diferencia de sólo 2 mm
+  const tLine = new THREE.MeshBasicMaterial({ color: 0xf4f7fb, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+  add(ribbonR(wA, wB, { d0: 25.72, h0: pitPaintH, d1: 25.88, h1: pitPaintH, vs: 30 }), tLine);
+  const tBay = ctex(256, 128, (g, w, h) => {
+    g.clearRect(0, 0, w, h); g.strokeStyle = '#f4f7fb'; g.lineWidth = 7; g.strokeRect(8, 6, w - 16, h - 12);
+    g.fillStyle = 'rgba(255,210,40,.9)'; g.fillRect(8, 6, w - 16, 10);
+  }, true, renderer);
+  const bayMat = new THREE.MeshBasicMaterial({ map: tBay, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+  add(ribbonR(wA, wB, { d0: 26.0, h0: pitPaintH, d1: 30.6, h1: pitPaintH, vs: PIT.bayW, so: wA, along: 'u', v0: 0, v1: 1 }), bayMat);
+  add(ribbonR(-1.2, 1.2, { d0: 17.6, h0: 0.06, d1: 24.5, h1: 0.06, vs: 30 }), new THREE.MeshBasicMaterial({ color: 0xf4f7fb, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
+
+  const bodyMat = lam({ color: 0xd9dde6 }), roofMat = lam({ color: 0x8e95a3 }), trimMat = lam({ color: 0xb3bac6 });
+  for (let i = 0; i < PIT.bays; i++) {
+    const sc = PIT.bay0 + PIT.bayW * i, f = frameAt(sc), q = basisQuat(f.rx, f.ry, f.rz, f.ux, f.uy, f.uz, -f.tx, -f.ty, -f.tz);
+    const mine = Math.abs(sc - PIT.box) < 1;
+    const liv = LIV[i % LIV.length];
+    const pri = mine ? PLAYER_DEF.color : liv[0], sec = mine ? PLAYER_DEF.sec : liv[1], acc = mine ? PLAYER_DEF.accent : liv[2];
+    const num = mine ? PLAYER_DEF.num : (NUMS[i % NUMS.length] || String(i + 1));
+    const name1 = mine ? PLAYER_DEF.spons : SPONS[i % SPONS.length];
+    const doorCanvas = mine ? {} : null;
+    const tex = ctex(320, 176, (g, w, h) => {
+      pitPaintDoor(g, w, h, pri, sec, acc, num, name1, false);
+    }, false, renderer, doorCanvas);
+    if (mine) PIT.mineDoor = { canvas: doorCanvas.c, texture: tex };
+    const body = new THREE.Mesh(new THREE.BoxGeometry(8, 9.4, PIT.bayW - 0.6), bodyMat);
+    body.position.set(f.cx + f.rx * 36 + f.ux * -0.3, f.cy + f.ry * 36 + f.uy * -0.3, f.cz + f.rz * 36 + f.uz * -0.3);
+    body.quaternion.set(q[0], q[1], q[2], q[3]); scene.add(body);
+    const grp = new THREE.Group(); grp.position.set(f.cx + f.rx * 36, f.cy + f.ry * 36, f.cz + f.rz * 36); grp.quaternion.set(q[0], q[1], q[2], q[3]);
+    const faceMats = [
+      new THREE.MeshBasicMaterial({ map: tex }), new THREE.MeshBasicMaterial({ map: tex }),
+      trimMat, bodyMat, trimMat, trimMat
+    ];
+    const face = new THREE.Mesh(new THREE.BoxGeometry(0.18, 4.8, PIT.bayW - 0.6), faceMats);
+    // Separar físicamente el portón del edificio (> 10 cm); antes quedaban
+    // dos caras a 1 cm y el z-buffer titilaba a la distancia (z-fighting).
+    face.position.set(-4.20, 2.35, 0); grp.add(face);
+    // techo más corto y retraído para no tapar el texto del frente
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(7.9, 0.30, PIT.bayW - 0.35), roofMat); roof.position.set(1.6, 5.0, 0); grp.add(roof);
+    const awn = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.20, PIT.bayW - 0.35), trimMat); awn.position.set(-2.5, 4.85, 0); grp.add(awn);
+    scene.add(grp);
+  }
+
+  const mkSign = (txt, sub, s, d, w = 9.8, h = 3.05) => {
+    const t = ctex(768, 220, (g, ww, hh) => {
+      g.fillStyle = '#ffd21a'; g.fillRect(0, 0, ww, hh);
+      g.fillStyle = '#101114'; g.fillRect(10, 10, ww - 20, hh - 20);
+      g.strokeStyle = '#ffd21a'; g.lineWidth = 6; g.strokeRect(22, 20, ww - 44, hh - 40);
+      g.fillStyle = '#ffd21a'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.font = '900 102px Arial Black, Arial, sans-serif'; g.fillText(txt, ww / 2, sub ? hh * 0.46 : hh * 0.53);
+      if (sub) { g.font = '700 36px Arial, sans-serif'; g.fillText(sub, ww / 2, hh - 42); }
+    }, false, renderer);
+    const f = frameAt(s), q = basisQuat(f.rx, f.ry, f.rz, f.ux, f.uy, f.uz, -f.tx, -f.ty, -f.tz);
+    const grp = new THREE.Group(); grp.position.set(f.cx + f.rx * d, f.cy + f.ry * d, f.cz + f.rz * d); grp.quaternion.set(q[0], q[1], q[2], q[3]);
+    const edgeMat = lam({ color: 0x3c4048 });
+    const blankBack = lam({ color: 0x24272c }); // reverso sin texto ni pantalla
+    const front = new THREE.MeshBasicMaterial({ map: t });
+    // El cartel original estaba sobre el plano XY local (cara +Z contra el sentido
+    // de circulación). SIN girarlo: así mira a los autos que vienen por la pista.
+    // El reverso -Z sigue siendo chapa lisa, sin texto.
+    const board = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.28), [
+      edgeMat, edgeMat, edgeMat, edgeMat, front, blankBack
+    ]);
+    board.position.set(0, 7.0, 0); grp.add(board);
+    [-3.75, 3.75].forEach(x => { const p = new THREE.Mesh(new THREE.BoxGeometry(0.28, 6.2, 0.28), lam({ color: 0xc9ced9 })); p.position.set(x, 3.15, 0); grp.add(p); });
+    scene.add(grp);
+  };
+  mkSign('PIT ROAD ▶', '', PIT.in0 - 25, WALL + 9.8, 10.4, 3.15);
+  mkSign('PIT OUT', '', PIT.ex1 + 12, WALL + 10.6, 8.8, 2.9);
+  return true;
+}
+/* ---------- equipo de boxes ---------- */
+function pitCrew(shared, scene, lam) {
+  const root = new THREE.Group(), f = frameAt(PIT.box), q = basisQuat(-f.rx, -f.ry, -f.rz, f.ux, f.uy, f.uz, f.tx, f.ty, f.tz);
+  root.position.set(f.cx + f.rx * PIT.lane, f.cy + f.ry * PIT.lane, f.cz + f.rz * PIT.lane);
+  root.quaternion.set(q[0], q[1], q[2], q[3]);
+  root.visible = false; // nunca aparece durante carrera, entrada o salida
+  scene.add(root);
+  const M = c => new THREE.MeshLambertMaterial({ color: c });
+  const gBody = new THREE.BoxGeometry(0.56, 0.72, 0.34), gVisor = new THREE.BoxGeometry(0.22, 0.08, 0.18);
+  const gUpperArm = new THREE.BoxGeometry(0.15, 0.34, 0.14), gForeArm = new THREE.BoxGeometry(0.13, 0.30, 0.13);
+  const gUpperLeg = new THREE.BoxGeometry(0.15, 0.38, 0.16), gLowerLeg = new THREE.BoxGeometry(0.14, 0.34, 0.15), gBoot = new THREE.BoxGeometry(0.16, 0.08, 0.22);
+  const gHead = new THREE.SphereGeometry(0.16, 12, 10);
+  const mkArm = (col, glove) => {
+    const g = new THREE.Group();
+    const upper = new THREE.Mesh(gUpperArm, col); upper.position.y = -0.17; g.add(upper);
+    const elbow = new THREE.Group(); elbow.position.y = -0.33; g.add(elbow);
+    const fore = new THREE.Mesh(gForeArm, col); fore.position.y = -0.15; elbow.add(fore);
+    const hand = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.1), M(glove)); hand.position.y = -0.31; elbow.add(hand);
+    return { g, elbow };
+  };
+  const mkLeg = (shoe) => {
+    const g = new THREE.Group();
+    const upper = new THREE.Mesh(gUpperLeg, M(0x253140)); upper.position.y = -0.19; g.add(upper);
+    const knee = new THREE.Group(); knee.position.y = -0.38; g.add(knee);
+    const lower = new THREE.Mesh(gLowerLeg, M(0x1b2430)); lower.position.y = -0.17; knee.add(lower);
+    const boot = new THREE.Mesh(gBoot, M(shoe)); boot.position.set(0, -0.36, 0.03); knee.add(boot);
+    return { g, knee };
+  };
+  const mkMan = (suit, helmet, trim) => {
+    const g = new THREE.Group();
+    const suitMat = M(suit), stripeMat = M(trim);
+    const hips = new THREE.Group(); hips.position.y = 0.86; g.add(hips);
+    const legL = mkLeg(0x0f141a), legR = mkLeg(0x0f141a); legL.g.position.x = 0.11; legR.g.position.x = -0.11; hips.add(legL.g); hips.add(legR.g);
+    const torso = new THREE.Group(); torso.position.y = 0.86; g.add(torso);
+    const body = new THREE.Mesh(gBody, suitMat); body.position.y = 0.37; torso.add(body);
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.60, 0.12, 0.35), stripeMat); stripe.position.set(0, 0.46, 0.01); torso.add(stripe);
+    const belt = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.08, 0.34), M(0xf1f3f7)); belt.position.set(0, 0.10, 0.01); torso.add(belt);
+    const head = new THREE.Group(); head.position.y = 0.93; torso.add(head);
+    const helmetMesh = new THREE.Mesh(gHead, M(helmet)); head.add(helmetMesh);
+    const visor = new THREE.Mesh(gVisor, M(0x20385f)); visor.position.set(0, -0.01, 0.11); head.add(visor);
+    const armL = mkArm(suitMat, 0xf1f3f7), armR = mkArm(suitMat, 0xf1f3f7);
+    armL.g.position.set(0.37, 0.63, 0); armR.g.position.set(-0.37, 0.63, 0); torso.add(armL.g); torso.add(armR.g);
+    return { g, torso, armL: armL.g, armR: armR.g, elbowL: armL.elbow, elbowR: armR.elbow, legL: legL.g, legR: legR.g, kneeL: legL.knee, kneeR: legR.knee, head, suitMat, stripeMat };
+  };
+  const V = { root, wm: [], jack: [], toss: [], newWheels: [], racks: [], sparks: [], crewLive: false, leaveElapsed: 0 };
+  const WS = [[0.97, 1.55], [-0.97, 1.55], [0.97, -1.5], [-0.97, -1.5]];
+  WS.forEach((p, i) => {
+    const m = mkMan(0x1f56c4, 0xf4f7fb, 0xffd23f), sx = Math.sign(p[0]);
+    m.g.position.set(sx > 0 ? 5.2 : -5.9, 0, p[1] + (p[1] > 0 ? 0.55 : -0.55));
+    m.g.rotation.y = -sx * Math.PI / 2; m.base = [sx * 2.25, p[1]]; root.add(m.g); V.wm.push(m);
+    // Neumático usado (sale de la rueda) y neumático nuevo (llega desde
+    // un pequeño soporte). Ninguno rueda fuera de escena ni se esfuma en marcha.
+    const t = new THREE.Mesh(shared.wheel, shared.tireMats); t.visible = false; root.add(t); V.toss.push(t);
+    const fresh = new THREE.Mesh(shared.wheel, shared.tireMats); fresh.visible = false; root.add(fresh); V.newWheels.push(fresh);
+    const rack = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.16, 0.62), M(0x2b333d));
+    rack.position.set(sx * 3.55, 0.10, p[1]); root.add(rack); V.racks.push(rack);
+    // Pistola neumática: se ve en la mano al aflojar y apretar tuercas.
+    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.32, 0.25), M(0x49545f));
+    gun.position.set(0, -0.32, 0.08); m.elbowR.add(gun); m.gun = gun;
+  });
+  V.fj = mkMan(0xe63946, 0xffd23f, 0xf4f7fb); V.fj.g.position.set(-5.55, 0, 4.27); V.fj.g.rotation.y = Math.PI; root.add(V.fj.g);
+  V.rj = mkMan(0xe63946, 0xffd23f, 0xf4f7fb); V.rj.g.position.set(-5.55, 0, -4.47); root.add(V.rj.g);
+  V.mech = mkMan(0xffd23f, 0xf4f7fb, 0xe63946); V.mech.g.position.set(-5.5, 0, 4.3); V.mech.g.rotation.y = Math.PI; root.add(V.mech.g);
+  // Reparadores delanteros: pulidora neumática y llave para el capó.
+  const hoodTool = (man, col) => {
+    const grp = new THREE.Group(); grp.position.set(0, -0.37, 0.15); man.elbowR.add(grp);
+    const toolMat = M(0x4b5864), tipMat = M(col), gripMat = M(0x151d24);
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.30, 0.14), gripMat); grp.add(grip);
+    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.13, 0.42), toolMat); barrel.position.set(0, -0.12, 0.20); grp.add(barrel);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.10, 0.15), tipMat); head.position.set(0, -0.12, 0.44); grp.add(head);
+    grp.visible = false;
+    return grp;
+  };
+  V.hoodTools = [hoodTool(V.fj, 0xffd23f), hoodTool(V.mech, 0xf0f3fa)];
+  V.lol = mkMan(0xf4f7fb, 0xe63946, 0x1f56c4); V.lol.g.position.set(-6.4, 0, 8.6); V.lol.g.rotation.y = Math.PI; root.add(V.lol.g);
+  const pole = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.0, 0.06), M(0xc9ced9)); pole.position.set(-6.4, 1.0, 8.7); root.add(pole);
+  V.stop = new THREE.Mesh(new THREE.CircleGeometry(0.42, 16), new THREE.MeshBasicMaterial({ color: 0xe02020, side: THREE.DoubleSide })); V.stop.position.set(-6.4, 2.3, 8.7); root.add(V.stop);
+  V.go = new THREE.Mesh(new THREE.CircleGeometry(0.42, 16), new THREE.MeshBasicMaterial({ color: 0x25d04a, side: THREE.DoubleSide })); V.go.position.set(-6.4, 2.3, 8.7); V.go.visible = false; root.add(V.go);
+  [3.0, -3.1].forEach(z => { const j = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.25, 0.4), M(0xffd23f)); j.position.set(0.55, 0.13, z - Math.sign(z) * 0.2); j.visible = false; root.add(j); V.jack.push(j); });
+  for (let i = 0; i < 6; i++) { const sp = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.07), new THREE.MeshBasicMaterial({ color: 0xffe14a })); sp.visible = false; root.add(sp); V.sparks.push(sp); }
+  return V;
+}
+function pitAnimate(dt) {
+  const V = PIT.vis; if (!V || !playerMesh) return;
+  const approaching = !!(P.pit && P.pit.st === 'in' && S.mode === 'race');
+  const servicing = !!(P.pit && P.pit.st === 'stop' && S.mode === 'race');
+  if (approaching || servicing) { V.crewLive = true; V.leaveElapsed = 0; }
+  const leaving = V.crewLive && !approaching && !servicing && S.mode === 'race';
+  if (leaving) V.leaveElapsed += dt;
+  if (!V.crewLive || (!approaching && !servicing && !leaving)) {
+    V.root.visible = false; V.crewLive = false; P.pitLift = 0; PIT.lastT = -1;
+    playerMesh.wheels.forEach(w => { w.visible = true; w.scale.set(1, 1, 1); });
+    if (playerMesh.hubs) playerMesh.hubs.forEach(h => { h.visible = true; });
+    return;
+  }
+  // Desaparición solo cuando quedó fuera de cuadro DESPUÉS de retirarse y
+  // de permanecer al menos tres segundos. Nunca por un máximo arbitrario
+  // mientras los personajes siguen visibles en pantalla.
+  if (leaving && V.leaveElapsed > 3.2 && R3 && R3.camera) {
+    R3.camera.updateMatrixWorld(); V.root.updateMatrixWorld(true);
+    let anyVisible = false;
+    for (const xx of [-6.5, 0, 6.5]) for (const zz of [-8.6, 0, 8.6]) {
+      const pos = V.root.localToWorld(new THREE.Vector3(xx, 1.2, zz));
+      const ndc = pos.project(R3.camera);
+      if (ndc.z > -1 && ndc.z < 1 && Math.abs(ndc.x) < 1.2 && Math.abs(ndc.y) < 1.2) anyVisible = true;
+    }
+    if (!anyVisible) {
+      V.root.visible = false; V.crewLive = false; P.pitLift = 0;
+      V.hoodTools.forEach(tool => tool.visible = false);
+      return;
+    }
+  }
+  V.root.visible = true;
+  // TT=-1 durante PIT IN y después de la salida: mantenemos la pose de
+  // espera o retirada sin reiniciar la cuadrilla delante de la cámara.
+  const T = approaching ? -1 : servicing ? PIT.TT : PIT.stopT + V.leaveElapsed;
+  V.hoodTools.forEach(tool => tool.visible = servicing && T >= 1.04 && T < 3.40);
+  // Los gatos sostienen un levantamiento mínimo y lento durante el trabajo.
+  const lift = servicing ? 0.10 * (pitSm((T - 0.45) / 0.45) - pitSm((T - 3.45) / 0.65)) : 0;
+  P.pitLift = lift;
+  if (T < 0) PIT.lastT = -1;
+  else if (servicing) {
+    const at = tt => PIT.lastT < tt && T >= tt;
+    if (at(0.45)) thump(0.33);
+    for (let i = 0; i < 4; i++) {
+      if (at(1.02 + 0.07 * i)) beep(2220, 0.12, 'sawtooth', 0.032);
+      if (at(1.92 + 0.07 * i)) beep(2500, 0.11, 'sawtooth', 0.038);
+    }
+    if (at(4.12)) thump(0.25);
+    if (at(PIT.stopT)) beep(1040, 0.3, 'square', 0.05);
+    PIT.lastT = T;
+  }
+  const sm = pitSm;
+  const deploy = sm((T - 0.06) / 0.52);
+  const retreat = sm((T - (PIT.stopT - 1.10)) / 0.78);
+  const workPos = deploy * (1 - retreat);
+  const wheelPoints = [[0.97, 1.55], [-0.97, 1.55], [0.97, -1.50], [-0.97, -1.50]];
+  for (let i = 0; i < 4; i++) {
+    const [wx, wz] = wheelPoints[i], sx = Math.sign(wx);
+    const rm0 = 1.05 + i * 0.07, rm1 = rm0 + 0.36;
+    const new0 = 1.64 + i * 0.07, new1 = new0 + 0.43;
+    // Primero se retira la rueda usada. Queda en el soporte junto al mecánico.
+    const removed = T >= rm0 + 0.04;
+    const mounted = T >= new1;
+    const w = playerMesh.wheels[i];
+    if (w) { w.visible = !removed || mounted; w.scale.set(1, 1, 1); }
+    const hub = playerMesh.hubs && playerMesh.hubs[i];
+    if (hub) { hub.visible = true; hub.scale.set(1, 1, 1); }
+    const oldTire = V.toss[i]; oldTire.visible = T >= rm0 && T < PIT.stopT + 7;
+    const oldU = sm((T - rm0) / (rm1 - rm0));
+    oldTire.position.set(lerp(wx, sx * 3.55, oldU), 0.4 + lift * (1 - oldU * 0.9), wz);
+    // La rueda nueva YA está en el soporte y viaja horizontalmente al eje.
+    const newTire = V.newWheels[i]; newTire.visible = T >= 0 && T < new1;
+    const newU = sm((T - new0) / (new1 - new0));
+    newTire.position.set(lerp(sx * 4.12, wx, newU), 0.4 + lift * newU, wz);
+    const m = V.wm[i], gun = (T >= rm0 - 0.34 && T < rm0 + 0.08) ||
+                                  (T >= new1 - 0.28 && T < new1 + 0.13);
+    const work = T >= 0.33 && T < new1 + 0.45;
+    const bx = m.base[0], bz = m.base[1];
+    const parkX = sx > 0 ? 5.2 : -5.9;
+    m.g.position.set(lerp(parkX, bx, workPos), work && workPos > 0.8 ? -0.20 : 0,
+      bz + (1 - workPos) * (bz > 0 ? 0.55 : -0.55));
+    m.torso.rotation.x = work && workPos > 0.8 ? 0.40 : 0;
+    m.torso.rotation.z = gun ? Math.sin(T * 62) * 0.034 : 0;
+    m.armL.rotation.x = gun ? -1.42 : work ? -0.90 : 0;
+    m.armR.rotation.x = gun ? -1.35 + Math.sin(T * 54) * 0.08 : work ? -0.85 : 0;
+    m.elbowR.rotation.x = gun ? -0.25 : 0;
+    m.legL.rotation.x = work && workPos > 0.8 ? -0.12 : 0;
+    m.legR.rotation.x = work && workPos > 0.8 ? 0.12 : 0;
+  }
+  V.jack.forEach((j, idx) => {
+    j.visible = T >= 0.16 && T < PIT.stopT - 0.48;
+    const rz = idx === 0 ? 3.0 : -3.1;
+    j.position.set(lerp(-5.4, 0.55, workPos), 0.13 + lift * 0.7, rz);
+  });
+  [V.fj, V.rj].forEach((m, idx) => {
+    const crouch = T >= 0.25 && (T < 0.9 || (T >= 3.4 && T < 4.1));
+    const up = T >= 0.7 && T < PIT.stopT - 0.55;
+    const rz = idx === 0 ? 3.55 : -3.75;
+    m.g.position.set(lerp(-5.55, 0.35, workPos), crouch && workPos > 0.8 ? -0.22 : 0,
+      rz + (1 - workPos) * (idx === 0 ? 0.72 : -0.72));
+    m.torso.rotation.x = crouch ? 0.50 : 0;
+    const hoodWork = idx === 0 && servicing && T >= 1.10 && T < 3.4;
+    m.armL.rotation.x = hoodWork ? -1.35 + 0.18 * Math.sin(T * 15) : up ? -2.5 : crouch ? -1.05 : 0;
+    m.armR.rotation.x = hoodWork ? -1.55 + 0.24 * Math.sin(T * 21) : up ? -2.5 : crouch ? -1.05 : 0;
+    if (idx === 0 && hoodWork) m.torso.rotation.x = 0.45;
+  });
+  const hm = servicing && T >= 1.15 && T < 3.30;
+  V.mech.g.position.set(lerp(-5.5, 1.4, workPos), 0, 3.4 + (1 - workPos) * 0.9);
+  V.mech.armR.rotation.x = hm ? -1.45 + 0.45 * Math.sin(T * 19) : 0;
+  V.mech.armL.rotation.x = hm ? -1.10 + 0.16 * Math.sin(T * 11) : 0;
+  V.mech.torso.rotation.x = hm ? 0.46 : 0;
+  V.sparks.forEach(s => {
+    s.visible = hm && workPos > 0.85 && Math.random() < 0.48;
+    if (s.visible) s.position.set(-0.4 + Math.random() * 1.5, 1.02 + Math.random() * 0.40, 1.85 + Math.random() * 0.65);
+  });
+  const go = T >= PIT.stopT - 0.30;
+  V.stop.visible = !go; V.go.visible = go;
+  V.lol.g.position.set(-6.4, 0, 8.6 + 0.6 * retreat);
+  V.lol.armR.rotation.x = -2.9; V.lol.armL.rotation.x = go ? -1.1 : -0.5;
+}
+function pitCamPose(f, out) {   // cámara de cinemática: paneos parecidos al pit de Daytona USA
+  const q = P.pit, st = q ? q.st : (S.pitCamSt || 'out');
+  const wp = (ds, dd, h) => { const g = frameAt(P.dist + ds); return [g.cx + g.rx * dd + g.ux * h, g.cy + g.ry * dd + g.uy * h, g.cz + g.rz * dd + g.uz * h]; };
+  const mix = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+  let ps, lk, fv;
+  if (st === 'in') {
+    const u = clamp((pitRel(P.dist) - PIT.in0) / Math.max(1, PIT.box - PIT.in0), 0, 1), e = pitSm(u);
+    const rear = wp(-10 - Math.min(5, P.v * 0.08), P.d - 5.5, 1.9);
+    const side = wp(0.2, PIT.lane + 7.2, 1.85);
+    ps = mix(rear, side, e);
+    lk = mix(wp(4, P.d, 0.9), wp(0.3, PIT.lane, 0.8), e);
+    fv = lerp(57, 46, e);
+  } else if (st === 'stop') {
+    const t = q ? q.t : 0;
+    if (t < 1.0) {
+      ps = wp(0.25, PIT.lane + 7.7, 1.8); lk = wp(0.2, PIT.lane, 0.9); fv = 44;
+    } else if (t < 2.55) {
+      const u = pitSm((t - 1.0) / 1.55);
+      ps = mix(wp(0.3, PIT.lane + 7.2, 1.8), wp(-0.7, PIT.lane + 4.6, 5.6), u);
+      lk = mix(wp(0.15, PIT.lane, 0.9), wp(0.0, PIT.lane, 1.1), u);
+      fv = lerp(44, 48, u);
+    } else if (t < 4.05) {
+      const u = pitSm((t - 2.55) / 1.5);
+      ps = mix(wp(-0.7, PIT.lane + 4.6, 5.6), wp(2.8, PIT.lane + 3.0, 2.05), u);
+      lk = mix(wp(0.0, PIT.lane, 1.1), wp(0.2, PIT.lane, 0.9), u);
+      fv = lerp(48, 39, u);
+    } else {
+      const u = pitSm(clamp((t - 4.05) / 0.55, 0, 1));
+      ps = mix(wp(2.8, PIT.lane + 3.0, 2.05), wp(-5.7, PIT.lane + 4.7, 2.15), u);
+      lk = mix(wp(0.2, PIT.lane, 0.9), wp(4.5, PIT.lane, 0.9), u);
+      fv = lerp(39, 50, u);
+    }
+  } else {
+    const u = pitSm(clamp((pitRel(P.dist) - PIT.box) / Math.max(1, PIT.ex1 - PIT.box), 0, 1));
+    ps = mix(wp(-5.7, P.d + 4.7, 2.15), wp(-8.2, P.d + 3.2, 2.15), u);
+    lk = mix(wp(4.5, P.d, 0.9), wp(8.0, P.d, 0.95), u);
+    fv = lerp(50, 58, u);
+  }
+  out.ps = ps; out.lk = lk; out.fv = fv;
+}
+function drawPitHud() {
+  if (!PIT.on || S.mp || S.mode !== 'race') return;
+  const r = pitRel(P.dist), q = P.pit;
+  if (!q) return;
+  const pw = 230, px = HW / 2 - pw / 2, py = 330;
+  hx.fillStyle = 'rgba(0,0,0,.7)'; rr(px, py, pw, q.st === 'stop' ? 66 : 38, 8); hx.fill();
+  hx.strokeStyle = '#ffd21a'; hx.lineWidth = 2; rr(px, py, pw, q.st === 'stop' ? 66 : 38, 8); hx.stroke();
+  const label = q.st === 'in' ? 'PIT IN' : q.st === 'stop' ? 'PIT WORK!!' : 'PIT OUT';
+  text(label, HW / 2, py + 27, 24, q.st === 'out' ? '#7dff9b' : '#ffd21a', 'center', F2, 3);
+  if (q.st === 'stop') {
+    const t = q.t, u = clamp(t / PIT.stopT, 0, 1);
+    hx.fillStyle = '#222'; hx.fillRect(px + 14, py + 40, pw - 28, 8); hx.fillStyle = '#ffd21a'; hx.fillRect(px + 14, py + 40, (pw - 28) * u, 8);
+    text('TIRES ' + (t >= 2.4 ? 'OK' : '...') + '   REPAIR ' + (t >= 2.7 ? 'OK' : '...'), HW / 2, py + 60, 12, '#ffffff', 'center', F2, 3);
+  }
+}
 
 function ctex(w, h, draw, repeat, renderer, out) {
   const c = document.createElement('canvas'); c.width = w; c.height = h; if (out) out.c = c;
@@ -2448,7 +3183,7 @@ function buildCar(def, shared, renderer, isPlayer) {
   cab.add(new THREE.Mesh(shared.roofQuad, dm(paintRoof, 256, isPlayer ? 256 : 192)));
   g.add(new THREE.Mesh(shared.trunkQuad, dm(paintTrunk, isPlayer ? 512 : 384, isPlayer ? 256 : 224)));
 
-  const wheels = [];
+  const wheels = [], hubs = [];
   const wheelX = 0.97; // posición original: sin sobresalir de la carrocería
   [[wheelX, 1.55], [-wheelX, 1.55], [wheelX, -1.50], [-wheelX, -1.50]].forEach(p => {
     const w = new THREE.Mesh(shared.wheel, shared.tireMats);
@@ -2456,7 +3191,7 @@ function buildCar(def, shared, renderer, isPlayer) {
     if (isPlayer) {
       const hub = new THREE.Mesh(shared.hubGeo, shared.hubMat);
       hub.position.set(p[0] + Math.sign(p[0]) * 0.2, 0.4, p[1]);
-      hub.rotation.z = Math.PI / 2; g.add(hub);
+      hub.rotation.z = Math.PI / 2; g.add(hub); hubs.push(hub);
     }
   });
 
@@ -2513,7 +3248,7 @@ function buildCar(def, shared, renderer, isPlayer) {
   }
   const damageModel = isPlayer ? { spoiler, spL, spR, cab, rearBump, rearLower, hoodDamage } : null;
   const sh = new THREE.Mesh(shared.shadowGeo, shared.shadowMat); sh.position.y = .045; g.add(sh);
-  return { group: g, wheels, bodyMat, cabMat, lowerMat, isPlayer, damageModel, glassSurfaces, paints, bumpMat: isPlayer ? bumpMat : null, sideGlassMat: isPlayer ? glass : null, b: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] };
+  return { group: g, wheels, hubs, bodyMat, cabMat, lowerMat, isPlayer, damageModel, glassSurfaces, paints, bumpMat: isPlayer ? bumpMat : null, sideGlassMat: isPlayer ? glass : null, b: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] };
 }
 
 /* ---- partículas: humo de derrape y chispas ---- */
@@ -2627,14 +3362,20 @@ function initScene() {
   scene.add(new THREE.Mesh(ribbon({ d0: -HALF - 1.6, h0: 0.02, d1: -HALF, h1: 0.02, vs: 6 }), curbMat));
   const wallMat = lam({ map: tWall });
   const wallSpec = (d) => ({ d0: d, h0: 0, d1: d, h1: 1.4, vs: 40, along: 'u', v0: 0.4375, v1: 1 });
-  scene.add(new THREE.Mesh(ribbon(wallSpec(WALL)), wallMat));
   scene.add(new THREE.Mesh(ribbon(wallSpec(-WALL)), wallMat));
   const capMat = lam({ color: 0xdfe6f3 });
-  scene.add(new THREE.Mesh(ribbon({ d0: WALL, h0: 1.4, d1: WALL + 0.9, h1: 1.4, vs: 40 }), capMat));
   scene.add(new THREE.Mesh(ribbon({ d0: -WALL - 0.9, h0: 1.4, d1: -WALL, h1: 1.4, vs: 40 }), capMat));
   const grassMat = lam({ map: tGrass });
   tGrass.repeat.set(1, 1);
-  scene.add(new THREE.Mesh(ribbon({ d0: WALL + 0.9, h0: 1.4, d1: WALL + 24, h1: 0, gy: -0.1, vs: 30 }), grassMat));
+  // lado derecho: muro, césped y PIT (si el pit falla al construirse, se arma el lado derecho de siempre)
+  PIT.on = false;
+  try { PIT.on = pitStatic({ scene, lam, wallMat, capMat, grassMat, renderer }); }
+  catch (err) { console.error('pit', err); PIT.on = false; }
+  if (!PIT.on) {
+    scene.add(new THREE.Mesh(ribbon(wallSpec(WALL)), wallMat));
+    scene.add(new THREE.Mesh(ribbon({ d0: WALL, h0: 1.4, d1: WALL + 0.9, h1: 1.4, vs: 40 }), capMat));
+    scene.add(new THREE.Mesh(ribbon({ d0: WALL + 0.9, h0: 1.4, d1: WALL + 24, h1: 0, gy: -0.1, vs: 30 }), grassMat));
+  }
   scene.add(new THREE.Mesh(ribbon({ d0: -WALL - 0.9, h0: 1.4, d1: -WALL - 24, h1: 0, gy: -0.1, vs: 30 }), grassMat));
   /* el borde interior de la banda de césped queda a ras del suelo (gy no aplica a d0): se completa con el suelo */
   tGrass.repeat.set(1, 1);
@@ -2654,7 +3395,9 @@ function initScene() {
   // Cartel luminoso de meta: CHECK! (GOAL en la última vuelta) y los números de los 5 primeros.
   BOARD = { c: document.createElement('canvas'), key: '' }; BOARD.c.width = 1024; BOARD.c.height = 320; BOARD.g = BOARD.c.getContext('2d'); BOARD.tex = new THREE.CanvasTexture(BOARD.c);
   try { BOARD.tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy()); } catch (e) { }
-  const banner = new THREE.Mesh(new THREE.PlaneGeometry(22, 6.9), new THREE.MeshBasicMaterial({ map: BOARD.tex })); banner.position.set(0, 8.5, 0.8); gantry.add(banner);
+  const bannerBody = new THREE.Mesh(new THREE.BoxGeometry(22.6, 7.4, 0.6), new THREE.MeshLambertMaterial({ color: 0x1b1d22 }));
+  bannerBody.position.set(0, 8.5, 0.58); gantry.add(bannerBody);
+  const banner = new THREE.Mesh(new THREE.PlaneGeometry(22, 6.9), new THREE.MeshBasicMaterial({ map: BOARD.tex })); banner.position.set(0, 8.5, 0.91); gantry.add(banner);
   updateBoard(true);
   scene.add(gantry);
 
@@ -2662,6 +3405,7 @@ function initScene() {
   const crowdMat = lam({ map: tCrowd });
   for (let side = -1; side <= 1; side += 2) {
     for (let s = 40; s < 480; s += 40) {
+      if (side === 1 && PIT.on && s < 350) continue;   // ahí van los garajes del pit
       const f = frameAt(s + 20);
       const q = basisQuat(f.rx, f.ry, f.rz, f.ux, f.uy, f.uz, -f.tx, -f.ty, -f.tz);
       for (let tier = 0; tier < 3; tier++) {
@@ -2771,6 +3515,9 @@ function initScene() {
   cars.forEach(c => { const m = buildCar(c, shared, renderer, false); scene.add(m.group); carMeshes.push(m); });
   playerMesh = buildCar(PLAYER_DEF, shared, renderer, true);
   scene.add(playerMesh.group);
+  PIT.vis = null;
+  if (PIT.on) { try { PIT.vis = pitCrew(shared, scene, lam); pitApplyLook(LK); }
+    catch (err) { console.error('pit crew', err); PIT.vis = null; } }
   remoteMeshes.length = 0;
   for (let i = 0; i < MP_MAX - 1; i++) {
     const m = buildCar(PLAYER_DEF, shared, renderer, true); m.group.visible = false;
@@ -2801,9 +3548,17 @@ function resize() {
 
 const cpos = [0, 0, 0];
 function placeCar(m, st, dt, tumbling) {
+  // pitRoadRaiseAt reutiliza frameAt(): muestreamos antes de calcular el marco
+  // del auto, y luego volvemos a cargarlo para no corromper su orientación.
+  const desiredRaise = st === P ? pitRoadRaise(st) : 0;
+  if (st === P) {
+    const oldRaise = st.roadRaise || 0;
+    const speed = desiredRaise > oldRaise ? 26 : 11;
+    st.roadRaise = oldRaise + (desiredRaise - oldRaise) * Math.min(1, (dt || 0.016) * speed);
+  }
   const f = frameAt(st.dist);
-  const d = st.d;
-  let px = f.cx + f.rx * d, py = f.cy + f.ry * d, pz = f.cz + f.rz * d;
+  const d = st.d, roadRaise = st === P ? (st.roadRaise || 0) : 0;
+  let px = f.cx + f.rx * d + f.ux * roadRaise, py = f.cy + f.ry * d + f.uy * roadRaise, pz = f.cz + f.rz * d + f.uz * roadRaise;
   const c = Math.cos(st.phi), s = Math.sin(st.phi);
   let zx = f.tx * c + f.rx * s, zy = f.ty * c + f.ry * s, zz = f.tz * c + f.rz * s;
   const zl = Math.hypot(zx, zy, zz); zx /= zl; zy /= zl; zz /= zl;
@@ -2811,6 +3566,7 @@ function placeCar(m, st, dt, tumbling) {
   let yx = f.ux - zx * dp, yy = f.uy - zy * dp, yz = f.uz - zz * dp;
   const yl = Math.hypot(yx, yy, yz); yx /= yl; yy /= yl; yz /= yl;
   let xx = yy * zz - yz * zy, xy = yz * zx - yx * zz, xz = yx * zy - yy * zx;
+  if (st === P && st.pitLift) { px += f.ux * st.pitLift; py += f.uy * st.pitLift; pz += f.uz * st.pitLift; }   // el gato levanta el auto
   const spd = st.v || 0;
   let roll = clamp(f.k * spd * spd * 0.0008, -0.05, 0.05) + (st.steer || 0) * 0.02 * (spd / MAXV);
   const pitchT = clamp(-(st.acc || 0) * 0.0022, -0.03, 0.03);
@@ -2847,7 +3603,8 @@ function introPose() {
 function updateCamera(st, dt, snap) {
   const ip = S.mode === 'countdown' ? introPose() : null;
   const cam = R3.camera, f = frameAt(st.dist);
-  const bx = f.cx + f.rx * st.d, by = f.cy + f.ry * st.d, bz = f.cz + f.rz * st.d;
+  const raise = st === P ? (st.roadRaise || 0) : 0;
+  const bx = f.cx + f.rx * st.d + f.ux * raise, by = f.cy + f.ry * st.d + f.uy * raise, bz = f.cz + f.rz * st.d + f.uz * raise;
   const a = 0.45 * st.phi + 0.55 * st.psi;
   R3.camAng += (a - R3.camAng) * (snap ? 1 : Math.min(1, dt * 6));
   const ca = Math.cos(R3.camAng), sa = Math.sin(R3.camAng);
@@ -2974,8 +3731,54 @@ function updateCamera(st, dt, snap) {
     lx = bx + fx * v.look + f.ux * 1.0; ly = by + fy * v.look + f.uy * 1.0; lz = bz + fz * v.look + f.uz * 1.0;
     fov = 62 + 15 * clamp(st.v / MAXV, 0, 1.1);
   }
+  // H: vista instantánea y fija desde DELANTE, como la cámara 3 invertida.
+  // Sin desplazamiento a los costados, sin zoom progresivo y sin alterar S.view.
+  if (st === P && rearHoldH && raceCameraUnlocked()) {
+    const frontDist = VIEWS[2].dist, frontHeight = VIEWS[2].h;
+    px = bx + fx * frontDist + f.ux * frontHeight;
+    py = by + fy * frontDist + f.uy * frontHeight;
+    pz = bz + fz * frontDist + f.uz * frontHeight;
+    lx = bx + f.ux * 1.08;
+    ly = by + f.uy * 1.08;
+    lz = bz + f.uz * 1.08;
+    fov = 62 + 8 * clamp(st.v / MAXV, 0, 1.1);
+  }
+  if (st === P && (S.pitW || 0) > 0 && S.mode === 'race' && px !== undefined) {   // cinemática del pit: se mezcla con la cámara normal
+    const pc = {}, w = pitSm(S.pitW); pitCamPose(f, pc); frameAt(st.dist);
+    px = lerp(px, pc.ps[0], w); py = lerp(py, pc.ps[1], w); pz = lerp(pz, pc.ps[2], w);
+    lx = lerp(lx, pc.lk[0], w); ly = lerp(ly, pc.lk[1], w); lz = lerp(lz, pc.lk[2], w); fov = lerp(fov, pc.fv, w);
+  }
   if (S.mode === 'timeout') { if (S.holdFov == null) S.holdFov = cam.fov; fov = S.holdFov; }   // al terminar el tiempo la cámara queda como estaba
   if (ip) { const e = ip.e; px = lerp(ip.px, px, e); py = lerp(ip.py, py, e); pz = lerp(ip.pz, pz, e); lx = lerp(ip.lx, lx, e); ly = lerp(ip.ly, ly, e); lz = lerp(ip.lz, lz, e); fov = lerp(ip.fov, fov, e); }
+  // Transición discreta 1-4: NO recorrer grandes distancias entre vistas.
+  // La cámara H, el PIT, la largada y el final mantienen sus reglas propias.
+  if (st === P && S.camBlend) {
+    if (rearHoldH || !raceCameraUnlocked() || (S.pitW || 0) > 0.005) {
+      S.camBlend = null;
+    } else {
+      const blend = S.camBlend;
+      blend.t = Math.min(blend.duration, blend.t + Math.max(0, dt));
+      const u = clamp(blend.t / blend.duration, 0, 1);
+      const k = 1 - (1 - u) * (1 - u) * (1 - u); // ease-out, sin rebotes ni zoom extra
+      const from = blend.from;
+      if (blend.nearby) {
+        // Sigue el desplazamiento del auto durante esos milisegundos: evita
+        // que la cámara se quede atrás al cambiar a alta velocidad.
+        const dx = bx - (from.bx ?? bx), dy = by - (from.by ?? by), dz = bz - (from.bz ?? bz);
+        px = lerp(from.px + dx, px, k); py = lerp(from.py + dy, py, k); pz = lerp(from.pz + dz, pz, k);
+        lx = lerp(from.lx + dx, lx, k); ly = lerp(from.ly + dy, ly, k); lz = lerp(from.lz + dz, lz, k);
+        fov = lerp(from.fov, fov, k);
+      } else {
+        // De interior a exterior (o al revés) se corta al nuevo encuadre.
+        // Sólo se amortiguan 18 cm y hasta 1.5º de FOV, sin cruzar la carrocería.
+        const settle = 1 - k;
+        px -= fx * (0.18 * settle); py -= fy * (0.18 * settle); pz -= fz * (0.18 * settle);
+        fov += clamp(from.fov - fov, -1.5, 1.5) * settle;
+      }
+      if (blend.t >= blend.duration) S.camBlend = null;
+    }
+  }
+  if (st === P) S.camPose = { px, py, pz, lx, ly, lz, fov, bx, by, bz };
   cam.position.set(px + (Math.random() - 0.5) * shake, py + (Math.random() - 0.5) * shake, pz + (Math.random() - 0.5) * shake);
   const ux = lerp(0, f.ux, 0.9), uy = lerp(1, f.uy, 0.9), uz = lerp(0, f.uz, 0.9), ul = Math.hypot(ux, uy, uz);
   cam.up.set(ux / ul, uy / ul, uz / ul);
@@ -3251,8 +4054,7 @@ function mmMove(d) {
 }
 function mmChoose() {
   const m = S.mm; if (!m || m.state === 'chosen') return;
-  if (MM_ITEMS[m.sel].mp) { mpEntryOpen(); return; }
-  if (MM_ITEMS[m.sel].rk) { rkOpenView(); return; }
+  if (MM_ITEMS[m.sel].mp || MM_ITEMS[m.sel].rk) { m.state = 'chosen'; m.chT = 0; sfxSelect(); return; }   // mismo ruidito y parpadeo que ARCADE / FREE
   S.freeMode = !!MM_ITEMS[m.sel].free; if (!S.freeMode) S.freeCar = null;   // ARCADE usa siempre el #41 de siempre
   if (!MM_ITEMS[m.sel].open) { m.shake = 0.35; beep(140, 0.18, 'sawtooth', 0.05); return; }
   m.state = 'chosen'; m.chT = 0; sfxSelect();
@@ -3261,7 +4063,7 @@ function mmUpdate(dt) {
   const m = S.mm; if (!m) return;
   m.t += dt; if (m.shake > 0) m.shake -= dt;
   if (m.state === 'in' && m.t >= 0.8) m.state = 'wait';
-  if (m.state === 'chosen') { m.chT += dt; if (m.chT >= 0.9) { S.mm = null; selMusicStart(); csOpen(); } }   // ARCADE MODE → selección de pista
+  if (m.state === 'chosen') { m.chT += dt; if (m.chT >= 0.9) { const it = MM_ITEMS[m.sel]; if (it.mp || it.rk) { m.state = 'wait'; m.chT = 0; m.t = 1; if (it.mp) mpEntryOpen(); else rkOpenView(); } else { S.mm = null; selMusicStart(); csOpen(); } } }   // ARCADE MODE → selección de pista
 }
 function mmPointer(e) {
   const m = S.mm; if (!m || m.state === 'chosen') return;
@@ -3283,7 +4085,9 @@ function mmBand(y0, y1) {   // franjas blanco y negro de la selección de pista 
    cuadro de descripción oscuro con borde blanco. El mouse hace lo mismo en todos: pasar sobre una opción la selecciona
    (mano), un campo de texto muestra el cursor de escribir, y lo demás no reacciona a nada.
    --------------------------------------------------------------------- */
+function wallT() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000; }   // reloj único: el fondo naranja avanza igual en menú, entrada y lobby
 function mmBackdrop(x, y, w, h, t) {
+  t = wallT();
   hx.save(); hx.beginPath(); hx.rect(x, y, w, h); hx.clip();
   const bg = hx.createLinearGradient(0, y, 0, y + h); bg.addColorStop(0, '#ffcc1c'); bg.addColorStop(0.55, '#ffa91e'); bg.addColorStop(1, '#f0701c');
   hx.fillStyle = bg; hx.fillRect(x, y, w, h);
@@ -3333,7 +4137,7 @@ const frameXY = e => { const r = $('frame').getBoundingClientRect(); return [(e.
 /* ---- Pausa ---- */
 const PM_ITEMS = ['ABANDONAR', 'SEGUIR'];   // ABANDONAR a la izquierda, SEGUIR a la derecha
 function pmDraw(m) {
-  m.t += 1 / 60;
+  if (!S.paused) m.t += 1 / 60;
   hx.fillStyle = 'rgba(0,0,0,.5)'; hx.fillRect(0, 0, HW, HH);
   const x = 170, y = 118, w = 460, h = 214;
   hx.fillStyle = '#000'; hx.fillRect(x - 6, y - 6, w + 12, h + 12); hx.fillStyle = '#fff'; hx.fillRect(x - 3, y - 3, w + 6, h + 6);
@@ -3398,14 +4202,14 @@ function meProbe(e, act) {
   return over;
 }
 function mmDraw(m) {
-  const t = m.t, eo = x => 1 - Math.pow(1 - clamp(x, 0, 1), 3);
+  const t = m.t, wt = wallT(), eo = x => 1 - Math.pow(1 - clamp(x, 0, 1), 3);
   hx.fillStyle = '#000'; hx.fillRect(0, 0, HW, HH);
   // fondo naranja/amarillo con rayas de velocidad
   hx.save(); hx.beginPath(); hx.rect(0, 40, HW, 366); hx.clip();
   const bg = hx.createLinearGradient(0, 40, 0, 406); bg.addColorStop(0, '#ffcc1c'); bg.addColorStop(0.55, '#ffa91e'); bg.addColorStop(1, '#f0701c');
   hx.fillStyle = bg; hx.fillRect(0, 40, HW, 366);
   for (let k = 0; k < 11; k++) {
-    const x = ((t * 36 + k * 93) % (HW + 240)) - 120, w = 26 + (k * 37) % 70;
+    const x = ((wt * 36 + k * 93) % (HW + 240)) - 120, w = 26 + (k * 37) % 70;
     hx.fillStyle = k % 2 ? 'rgba(255,255,255,.10)' : 'rgba(190,60,0,.13)';
     hx.beginPath(); hx.moveTo(x, 406); hx.lineTo(x + w, 406); hx.lineTo(x + w + 150, 40); hx.lineTo(x + 150, 40); hx.closePath(); hx.fill();
   }
@@ -3624,7 +4428,7 @@ function startRaceMP(ord) {
   S.freeMode = false; S.freeRun = false; S.freeCar = null; setStats(null);
   LAPS = MP_LAPS; S.trans = NET.t; S.mp = true; S.mySeat = mpSeat(me); repaintPlayer(S.trans); S.holdFov = null; resCache = null;
   if (document.body) document.body.dataset.menu = '';
-  S.view = 2; applyView();
+  S.view = 2; applyView(); rearHoldH = false; S.camBlend = null;
   resetPlayer(); makeCars(); finCount = 0; raceT = 0; msgs = []; demoCar = null;
   // Con CPU activados, ellos largan ADELANTE (primeras filas de la grilla) y los jugadores detrás: si no, los humanos los atropellan en la salida.
   const cpuN = (NET.state && NET.state.cpu) ? Math.max(0, 20 - ord.length) : 0;
@@ -3837,7 +4641,7 @@ const mpTotal = () => S.mp ? (NET.state && NET.state.ord.length || mpPlayers().l
 function drawLobby() {
   const L0 = S.lb, t = L0.t; L0.hit = [];
   const pl = mpPlayers(), hp = pl.find(p => NET.state && p.peer === NET.state.host), hpr = hp ? hp.presence : {}, me = pl.find(p => p.sameTab);
-  mpBackdrop(t, 30);
+  mpWall(t);
   hx.fillStyle = '#c1161c'; rr(60, 26, 680, 320, 10); hx.fill(); hx.fillStyle = '#23262e'; rr(64, 30, 672, 312, 8); hx.fill();
   hx.fillStyle = '#12141a'; hx.fillRect(66, 32, 540, 22);
   hx.strokeStyle = '#2c303a'; hx.lineWidth = 2; hx.beginPath(); for (let x = 70; x < 600; x += 7) { hx.moveTo(x, 54); hx.lineTo(x + 14, 32); } hx.stroke();
@@ -4245,7 +5049,7 @@ function msColumn(i, m, t, chosen, cT, eo) {
   const e = eo((t - (0.3 + 0.16 * i)) / 0.45); if (e <= 0) return;
   let ox = (i === 0 ? -1 : 1) * (1 - e) * 360, oy = 0, al = 1;
   const can3 = !!(R3 && R3.sel && !window.__no3d);
-  if (chosen && !sel) { if (!can3) al = clamp(1 - cT / 0.55, 0, 1); oy += Math.max(0, cT - 0.35) * 260; }   // con 3D real el otro auto no se desvanece: se desliza hacia abajo tal cual
+  if (chosen && !sel) { al = clamp(1 - cT / 0.55, 0, 1); oy += Math.max(0, cT - 0.35) * 260; }   // igual que en Circuit Select: se desvanece y se desliza hacia abajo
   if (al <= 0.01) return;
   if (sel && m.shake > 0) ox += Math.sin(m.shake * 70) * 5;
   const X = x + ox;
@@ -4254,8 +5058,11 @@ function msColumn(i, m, t, chosen, cT, eo) {
   // panel del auto
   hx.fillStyle = '#0a0a0e'; rr(X - 3, MS_PY - 3, MS_W + 6, MS_PH + 6, 11); hx.fill();
   const g3 = can3;
-  m.rects[i] = { x: X + 3, y: MS_PY + 3 + oy, w: MS_W - 6, h: MS_PH - 6, show: g3 };
-  if (g3) hx.clearRect(X + 3, MS_PY + 3, MS_W - 6, MS_PH - 6);   // los autos reales del juego se dibujan en el canvas 3D, que se ve por este hueco
+  m.rects[i] = { x: X + 3, y: MS_PY + 3 + oy, w: MS_W - 6, h: MS_PH - 6, show: g3 && al > 0.01 };
+  if (g3) {
+    hx.clearRect(X + 3, MS_PY + 3, MS_W - 6, MS_PH - 6);   // los autos reales del juego se dibujan en el canvas 3D, que se ve por este hueco
+    if (chosen && !sel && TFX) { hx.save(); hx.globalAlpha = 1 - al; hx.drawImage(TFX.bg, X + 3, MS_PY + 3 + oy, MS_W - 6, MS_PH - 6, X + 3, MS_PY + 3, MS_W - 6, MS_PH - 6); hx.restore(); }   // el auto 3D también se desvanece hacia el fondo
+  }
   hx.save(); rr(X, MS_PY, MS_W, MS_PH, 9); hx.clip();
   if (!g3) {
   const pg = hx.createLinearGradient(0, MS_PY, 0, MS_PY + MS_PH); pg.addColorStop(0, k.p0); pg.addColorStop(1, k.p1); hx.fillStyle = pg; hx.fillRect(X, MS_PY, MS_W, MS_PH);
@@ -4280,7 +5087,7 @@ function msColumn(i, m, t, chosen, cT, eo) {
   hx.font = '700 12px ' + F2; hx.fillStyle = '#fff'; const a = 'MAX SPEED ', b2 = k.kmh + '', d2 = ' km/h'; const wa = hx.measureText(a).width, wd = hx.measureText(d2).width; hx.font = '400 15px ' + F1; const wb = hx.measureText(b2).width;
   let sx = BX + BW / 2 - (wa + wb + wd) / 2; hx.textAlign = 'left'; hx.textBaseline = 'alphabetic'; const sy = MS_BY + BH - 11;
   hx.font = '700 12px ' + F2; hx.fillStyle = '#fff'; hx.fillText(a, sx, sy); sx += wa; hx.font = '400 15px ' + F1; hx.fillStyle = k.c2; hx.fillText(b2, sx, sy + 1); sx += wb; hx.font = '700 12px ' + F2; hx.fillStyle = '#fff'; hx.fillText(d2, sx, sy);
-  if (sel && chosen && Math.floor(cT * 11) % 2 === 0) { hx.fillStyle = 'rgba(255,255,255,.7)'; rr(BX, MS_BY, BW, BH, 9); hx.fill(); }
+  if (sel && chosen && Math.floor(cT * 11) % 2 === 0) { hx.fillStyle = 'rgba(255,255,255,.7)'; rr(BX, MS_BY, BW, BH, 9); hx.fill(); }   // parpadeo blanco al elegir (como en Circuit Select)
   hx.restore();
 }
 /* Free Mode: un solo auto en el centro; izquierda/derecha cambia entre los 10 (5 pares automático/manual) */
@@ -4492,6 +5299,7 @@ function drawHUD() {
   const rank = S.mode === 'timeout' ? S.resultPlace : rankNow();
   const racing = S.mode === 'race' || S.mode === 'countdown';
   if (racing) drawPlayerTags();
+  drawPitHud();
   const sp = clamp((P.v - 55) / 35, 0, 1);
   if (sp > 0.05) {
     hx.strokeStyle = 'rgba(255,255,255,' + (0.22 * Math.min(1, sp)).toFixed(2) + ')'; hx.lineWidth = 2;
@@ -4803,6 +5611,16 @@ function renderNameCar() {
 let lastRender = 0;
 function render(dt) {
   if (!R3) return;
+  // En pausa individual, el canvas 3D conserva exactamente el último estado:
+  // sin placeCar (ruedas), partículas, daños, ni updateCamera (temblores).
+  // Redibujamos sólo el fotograma estático y el menú de pausa.
+  if (S.paused && !S.mp) {
+    R3.renderer.render(R3.scene, R3.camera);
+    drawHUD();
+    if (S.pm) pmDraw(S.pm);
+    audioTick(false);
+    return;
+  }
   const target = P;
   const vis = (st) => { const g = cdiff(st.dist - target.dist); return g > -90 && g < 1100; };
   remoteMeshes.forEach(m => { m.group.visible = false; });
@@ -4912,9 +5730,10 @@ function repaintPlayer(trans) {
   const seat = S.mp ? (S.mySeat || 1) : 0;
   const car = seat ? MP_CARS[seat - 1] : (S.freeCar || (trans === 'manual' ? CARS[1] : CARS[0]));
   const number = seat ? String(seat) : '41';
-  if (curLook === car && curNumber === number && !repaintPlayer.force) return;
+  if (curLook === car && curNumber === number && !repaintPlayer.force) { pitApplyLook(car); return; }
   curLook = car; curNumber = number; setLook(car);
   if (playerMesh) repaintMesh(playerMesh, car, number);
+  pitApplyLook(car);
 }
 function showMenu(keepSel) {
   voiceStop();
@@ -4954,7 +5773,7 @@ function startRace() {
   voiceStop();
   LAPS = 4; initAudio(); musicStop(); selMusicStop(); S.sel = false; S.mm = null; S.cs = null; S.ms = null; S.gs = null; repaintPlayer(S.trans); S.holdFov = null; resCache = null;
   if (document.body) document.body.dataset.menu = '';
-  S.view = 2; applyView();
+  S.view = 2; applyView(); rearHoldH = false; S.camBlend = null;
   resetPlayer(); makeCars(); finCount = 0; raceT = 0; msgs = []; demoCar = null;
   S.freeRun = !!S.freeMode; if (!S.freeRun) S.freeCar = null; setStats(S.freeRun ? S.freeCar : null); if (S.freeRun) P.time = 1e9;   // FREE MODE: sin tiempo
   /* largada rodante: todos en movimiento; el #41 cruza la línea de salida justo al "GO" */
@@ -4985,6 +5804,7 @@ function setPause(p) {
   if (p) { if (!S.pm) S.pm = { t: 0, sel: 1, hit: [] }; } else S.pm = null;
   if (S.mp) return;   // en multijugador el mundo no se detiene
   S.paused = p;
+  if (p) { rearHoldH = false; S.camBlend = null; }
   if (p && A.c) { try { A.eg.gain.value = 0; A.ng.gain.value = 0; A.ig.gain.value = 0; } catch (e) { } }
 }
 function shift(dirn) {
@@ -5050,17 +5870,22 @@ window.addEventListener('keydown', e => {
   }
   const k = KEYMAP[e.code];
   if (k) { keys[k] = true; e.preventDefault(); return; }
+  if (e.code === 'KeyH') { if (raceCameraUnlocked()) { rearHoldH = true; S.camBlend = null; } e.preventDefault(); return; }
   if (e.repeat) return;
   if (e.code === 'KeyX' || e.code === 'KeyE') shift(1);
   else if (e.code === 'KeyZ' || e.code === 'KeyQ') shift(-1);
-  else if (e.code === 'KeyV') { if (S.crashView != null) return; S.view = (S.view + 1) % VIEWS.length; applyView(); }
-  else if (/^Digit[1-4]$/.test(e.code)) { if (S.crashView != null) return; S.view = +e.code.slice(5) - 1; applyView(); }
+  else if (e.code === 'KeyV') { selectRaceCamera((S.view + 1) % VIEWS.length); }
+  else if (/^Digit[1-4]$/.test(e.code)) { selectRaceCamera(+e.code.slice(5) - 1); }
   else if (e.code === 'KeyP' || e.code === 'Escape') setPause(!S.pm);
   else if (e.code === 'Enter' && S.mode === 'menu') startRace();
   else if (e.code === 'Enter' && S.mode === 'ended') showMenu();
 });
-window.addEventListener('keyup', e => { if (e.target && e.target.tagName === 'INPUT' && e.target.type !== 'range') return; const k = KEYMAP[e.code]; if (k) { keys[k] = false; e.preventDefault(); } });
-window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; for (const k in touch) touch[k] = false; if (!S.mp) setPause(true); });
+window.addEventListener('keyup', e => {
+  if (e.code === 'KeyH') { rearHoldH = false; S.camBlend = null; e.preventDefault(); return; }
+  if (e.target && e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  const k = KEYMAP[e.code]; if (k) { keys[k] = false; e.preventDefault(); }
+});
+window.addEventListener('blur', () => { rearHoldH = false; S.camBlend = null; for (const k in keys) keys[k] = false; for (const k in touch) touch[k] = false; if (!S.mp) setPause(true); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { if (!S.mp) setPause(true); if (MUSIC) MUSIC.pause(); if (SELMUS) SELMUS.pause(); } else { musicSync(); selMusicSync(); } });
 const musicUnlock = () => { if (MUSIC && musicOn && MUSIC.paused && S.mode === 'menu') musicSync(); if (SELMUS && selMusicOn && SELMUS.paused) selMusicSync(); };
 window.addEventListener('pointerdown', musicUnlock, true); window.addEventListener('keydown', musicUnlock, true);
@@ -5159,7 +5984,7 @@ function frame(now) {
   if (R3) { try { render(dt); } catch (e) { if (!frame.err) { frame.err = true; console.error(e); } } }
 }
 requestAnimationFrame(frame);
-window.__r500 = { S, P, NET, CARS, MP_CARS, CPU_CAR, keys, step, startRace, startRaceMP, cpuContact, frameAt, stepPlayer, drawHUD, get standings() { return mpStandings(); }, get remoteMeshes() { return remoteMeshes; }, get cars() { return cars; }, get L() { return L; }, get N() { return N; }, get raceT() { return raceT; }, KK, BB };
+window.__r500 = { PIT, pitRel, pitOutAt, S, P, NET, CARS, MP_CARS, CPU_CAR, keys, step, startRace, startRaceMP, cpuContact, frameAt, stepPlayer, drawHUD, get standings() { return mpStandings(); }, get remoteMeshes() { return remoteMeshes; }, get cars() { return cars; }, get L() { return L; }, get N() { return N; }, get raceT() { return raceT; }, KK, BB };
 })();
 </script>
 
