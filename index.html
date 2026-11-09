@@ -495,10 +495,13 @@ function pitRoadRaise(st) {
    En la última vuelta no hay servicio, pero la calle de boxes sigue transitable. */
 function pitAvailable() {
   if (!PIT.on || S.mp || P.finished || P.lapsDone >= LAPS - 1) return false;
+  // Se puede recibir servicio EN LA VUELTA SIGUIENTE; solo se impide repetir
+  // la misma vuelta, incluso si el jugador vuelve a cruzar la entrada.
   if (P.pitLap === P.lapsDone) return false;
-  // No permitir que crucen GOAL, retrocedan y vuelvan a entrar sin haber
-  // recorrido una vuelta completa desde la última atención.
-  if (Number.isFinite(P.pitServiceDist) && P.dist - P.pitServiceDist < L - 60) return false;
+  // Protección contra un cruce de GOAL seguido de un regreso inmediato:
+  // solo hay nueva atención si realmente se recorrió casi una vuelta entera.
+  if (Number.isFinite(P.pitServiceDist) && P.pitLap >= 0 &&
+      P.lapsDone > P.pitLap && P.dist - P.pitServiceDist < L - 60) return false;
   return true;
 }
 // La entrada visible es una rampa real: sin cuellos de botella ni cierres
@@ -523,13 +526,13 @@ function pitEnter(dt) {
   // toma el control SÓLO tras superar la punta del separador y circular
   // inequívocamente por el carril de boxes, no al rozar la entrada.
   const alreadyInPit = r >= PIT.in1 + 8 && r < PIT.box - 95 &&
-    P.d >= PIT.sep + CAR_WD / 2 + 0.28 && P.v >= 0;
+    P.d >= PIT.sep + CAR_WD / 2 + 0.28 && P.v >= 0 && Math.cos(P.psi) > 0.55;
   P.pitDwell = alreadyInPit ? (P.pitDwell || 0) + (dt || 1 / 60) : 0;
   if (P.pitDwell >= 0.16) {
     P.pit = { st: 'in', t: 0, r0: r, d0: P.d, vNew: P.v, vPrev: P.v, repaired: false };
     P.pitLap = P.lapsDone;
     P.pitServiceDist = P.dist;
-    P.pitDwell = 0;
+    P.pitDwell = 0; P.pitBypass = false;
     PIT.TT = -1; P.inv = Math.max(P.inv, 0.5);
     beep(880, 0.08, 'square', 0.05); setTimeout(() => beep(1320, 0.12, 'square', 0.05), 90);
   }
@@ -538,30 +541,71 @@ function pitEnter(dt) {
 // que lo atravesó debe poder volver al circuito SIN reparar ni teletransportarse.
 // La asistencia modifica acelerador y volante reales, no P.d ni P.dist.
 function pitBypassDrive(dt) {
+  // Dirección física solamente para la CINEMÁTICA final (cuando el jugador
+  // ya no controla el coche). Se empieza después de terminar el separador:
+  // antes no se puede cruzar legalmente al otro carril.
   const r = pitRel(P.dist), f = frameAt(P.dist + P.v * 0.45);
-  const begin = PIT.ex0 - 42, end = PIT.ex1 - 25;
+  const begin = PIT.ex0 + 12, end = PIT.ex1 - 48;
   const u = clamp((r - begin) / Math.max(1, end - begin), 0, 1);
-  const targetD = lerp(PIT.lane, 11.6, pitSm(u));
-  const slope = (11.6 - PIT.lane) * 6 * u * (1 - u) / Math.max(1, end - begin);
-  const heading = clamp(Math.atan(slope) - 0.090 * (P.d - targetD) - 0.12 * P.psi, -0.30, 0.14);
+  const targetD = lerp(PIT.lane, 10.5, pitSm(u));
+  const slope = (10.5 - PIT.lane) * 6 * u * (1 - u) / Math.max(1, end - begin);
+  const heading = clamp(Math.atan(slope) - 0.11 * (P.d - targetD) - 0.15 * P.psi, -0.34, 0.18);
   const maxTurn = 30 / Math.max(P.v, 12);
-  const steer = clamp((-f.k * P.v + 3.2 * (heading - P.phi) + 0.90 * (heading - P.psi)) / maxTurn, -1, 1);
-  const targetV = r < PIT.ex0 + 65 ? 35 : 50;
-  return { gas: P.v < targetV - 1.2, brake: P.v > targetV + 2, steer };
+  const steer = clamp((-f.k * P.v + 3.6 * (heading - P.phi) + 1.0 * (heading - P.psi)) / maxTurn, -1, 1);
+  const targetV = r < PIT.ex1 - 85 ? 33 : 40;
+  return { gas: P.v < targetV - 1.2, brake: P.v > targetV + 1.8, steer };
 }
 function pitBypassControl(dt, inp) {
   if (!PIT.on || S.mp || P.pit || (S.mode !== 'race' && S.mode !== 'finish')) return inp;
-  const r = pitRel(P.dist);
-  // Se marca la circulación real por boxes antes de GOAL, de forma que la
-  // incorporación siga activa aunque la carrera termine al cruzar la meta.
-  if (r >= PIT.in1 + 8 && r < PIT.ex0 - 65 &&
-      P.d > PIT.sep + 0.25 && !pitAvailable()) P.pitBypass = true;
+  const r = pitRel(P.dist), finishing = S.mode === 'finish';
+  // La asistencia de seguridad NO debe pelearse con el volante cuando el
+  // jugador da la vuelta y circula en sentido contrario. Para ese caso, se
+  // descarta la pasada sin servicio y se conservan intactos sus controles.
+  // El modo finish sí mantiene su propio piloto automático cinematográfico.
+  const forward = P.v > 1.2 && Math.cos(P.psi) > 0.55;
+  if (!finishing && !forward) { P.pitBypass = false; return inp; }
+  // Registrar una pasada sin servicio, pero NO activar una nueva cinemática.
+  // La entrada sigue abierta incluso en la última vuelta.
+  if (r >= PIT.in1 + 8 && r < PIT.ex1 - 35 &&
+      P.d > PIT.sep + 0.25 && (finishing || !pitAvailable())) P.pitBypass = true;
   if (!P.pitBypass) return inp;
-  if (r >= PIT.ex1 - 15 && P.d < 14 && Math.abs(P.psi) < 0.18) {
-    P.pitBypass = false; return inp;
+
+  if (finishing && r >= PIT.ex0 + 10) S.finLane = 10.5;
+  if (r > PIT.ex1 + 40 || (r >= PIT.ex1 - 12 && P.d < 13.5 && Math.abs(P.psi) < 0.18)) {
+    P.pitBypass = false;
+    if (finishing) S.finLane = 10.5; // seguir centrado tras salir; nunca volver hacia el muro
+    return inp;
   }
-  if (r > PIT.ex1 + 60) { P.pitBypass = false; return inp; }
-  if (r < PIT.ex0 - 95) return inp; // rueda libre en la recta de boxes
+
+  if (!finishing) {
+    // El volante de la persona tiene PRIORIDAD absoluta: girar a izquierda
+    // o derecha desactiva cualquier corrección, incluso si el auto está
+    // cerca de un muro. En sentido contrario ya se salió arriba.
+    if (Math.abs(inp.steer) > 0.01) return inp;
+    // Con el volante suelto y avanzando por la salida, mantener solamente
+    // un aviso preventivo de dirección para evitar el borde de la rampa.
+    if (r >= PIT.ex0 + 20 && r < PIT.ex1 && P.d > WALL - 1.5) {
+      const lookAhead = Math.max(14, Math.min(38, P.v * 0.65));
+      const soon = pitOutAt(P.dist + lookAhead) - CAR_WD / 2;
+      const danger = P.d - (soon - 2.4);
+      if (danger > 0) {
+        const assistance = clamp(danger / 6.5, 0, 0.70);
+        // Actúa únicamente con el volante suelto. Nunca modifica gas/freno.
+        return { gas: inp.gas, brake: inp.brake, steer: lerp(0, -0.75, assistance) };
+      }
+    }
+    return inp;
+  }
+
+  // En el FINAL de carrera sí corresponde piloto automático. Su objetivo
+  // no puede quedar fijado en d=23.6 porque ese carril desaparece al salir.
+  if (r < PIT.ex0 + 10) {
+    // Seguir por boxes sin intentar atravesar el separador.
+    const f = frameAt(P.dist + P.v * 0.45), maxTurn = 30 / Math.max(P.v, 12);
+    const steer = clamp((-f.k * P.v - 0.055 * (P.d - PIT.lane) - 1.6 * P.psi) / maxTurn, -1, 1);
+    return { gas: P.v < 32, brake: P.v > 36, steer };
+  }
+  S.finLane = 10.5;
   return pitBypassDrive(dt);
 }
 function pitDrive(dt) {   // control automático dentro del pit: devuelve el input y deja en q.vNew la velocidad deseada
@@ -1415,7 +1459,13 @@ function beginSoloFinish(place, completed = true) {
   if (completed) {
     // Igual al index adjunto: GOAL, conducción automática y giro de 180 grados.
     S.mode = 'finish';
-    S.finLane = P.d;
+    const inPitAtGoal = PIT.on && !S.mp &&
+      pitRel(P.dist) >= PIT.in1 && pitRel(P.dist) < PIT.ex1 &&
+      P.d > PIT.sep + 0.25;
+    // Si GOAL ocurre dentro de boxes, el final debe respetar la rampa y
+    // terminar apuntando al centro de la pista, nunca al muro de salida.
+    S.finLane = inPitAtGoal ? PIT.lane : P.d;
+    if (inPitAtGoal) P.pitBypass = true;
     S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
     beep(880, 0.15); setTimeout(() => beep(1320, 0.3), 160);
   } else {
@@ -1895,6 +1945,9 @@ function sim(dt) {
       if (S.finLane == null) S.finLane = P.d;
       if (!(S.finCruise > 0)) S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
       const cruise = clamp(S.finCruise + Math.min(10, S.finT * 1.6), 46, MAXV * 0.98);
+      if (PIT.on && !S.mp && P.d > PIT.sep &&
+          pitRel(P.dist) >= PIT.ex0 + 10 && pitRel(P.dist) <= PIT.ex1 + 45)
+        S.finLane = 10.5;
       inp = autoDrive(cruise, S.finLane);
       // Desenlace visual: el ganador posa; segundo derrapa, tercero choca,
       // cuarto o inferior vuelca. No influye en el orden del servidor.
@@ -4641,7 +4694,8 @@ const mpTotal = () => S.mp ? (NET.state && NET.state.ord.length || mpPlayers().l
 function drawLobby() {
   const L0 = S.lb, t = L0.t; L0.hit = [];
   const pl = mpPlayers(), hp = pl.find(p => NET.state && p.peer === NET.state.host), hpr = hp ? hp.presence : {}, me = pl.find(p => p.sameTab);
-  mpWall(t);
+  // El lobby recupera el wallpaper celeste con letras de SCOREBOARDS.
+  mpBackdrop(t, 30);
   hx.fillStyle = '#c1161c'; rr(60, 26, 680, 320, 10); hx.fill(); hx.fillStyle = '#23262e'; rr(64, 30, 672, 312, 8); hx.fill();
   hx.fillStyle = '#12141a'; hx.fillRect(66, 32, 540, 22);
   hx.strokeStyle = '#2c303a'; hx.lineWidth = 2; hx.beginPath(); for (let x = 70; x < 600; x += 7) { hx.moveTo(x, 54); hx.lineTo(x + 14, 32); } hx.stroke();
