@@ -287,11 +287,21 @@ def simulate_car(st, ctrl, trans, dt, now):
         elif gear > 0 and v / GM[gear - 1] < .62:
             gear -= 1
     else:
-        gear = int(ctrl["gear"])
-        if gear < 3 and v > GM[gear]:
-            v = max(GM[gear], v - 34 * dt)
+        # Arcade manual: cambio de marcha con 0,10 s de corte de potencia.
+        chosen = int(ctrl["gear"])
+        if chosen != gear:
+            # La subida bien sincronizada en Arcade regala un pequeño impulso.
+            if chosen == gear + 1 and .85 < v / GM[gear] < 1.03:
+                v += 1.4
+            st["shift"] = .10
+        gear = chosen
+        limit = GM[gear] * (1.05 if gear == 3 else 1.0)
+        if gear < 3 and v > limit:
+            v = max(limit, v - 34 * dt)
     st["gear"] = gear
-    rpm = v / GM[gear]
+    # La cuarta marcha manual de Arcade admite 5 % más de revoluciones.
+    max_gear_speed = GM[gear] * (1.05 if trans == "manual" and gear == 3 else 1.0)
+    rpm = v / max_gear_speed
     if st["shift"] > 0:
         st["shift"] -= dt
     slipping = brake and v > 27 and abs(st["steer"]) > .20
