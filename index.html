@@ -419,6 +419,31 @@ body.cabinet-on.cabinet-race-leader .cabinet-leader-glow {
 #mpBox.overlay[hidden] { display: none; }
 #pauseBox { display: none !important; }
 </style>
+<style id="mobile-layout-fix">
+/* ---- Celular: el cuadro del juego siempre centrado y los botones sin tapar el HUD ---- */
+@media (pointer: coarse) {
+  :root { --fw: min(100vw, calc(100dvh * 16 / 9)); --fh: calc(100vw * 9 / 16); --pb: 0px; }
+  .shell .cabinet-stage { display: flex; justify-content: center; }   /* el contenedor del cabinet dejaba el cuadro pegado a la izquierda */
+  .shell .cabinet-stage > .frame { flex: none; }
+}
+@media (pointer: coarse) and (orientation: landscape) {
+  /* CAM y pausa en huecos libres del HUD (entre VUELTA / velocímetro / POSICIÓN), no encima */
+  .tmisc.race { left: 0; right: auto; top: 0; width: 100vw; height: 0; transform: none; gap: 0; pointer-events: none; }
+  .tmisc.race button { position: absolute; top: max(12px, calc(env(safe-area-inset-top) + 8px)); pointer-events: auto; }
+  #tCam { left: calc(50vw - var(--fw) / 2 + var(--fw) * .15); }
+  #tPause { left: calc(50vw - var(--fw) / 2 + var(--fw) * .675); }
+}
+@media (pointer: coarse) and (orientation: portrait) {
+  /* el juego va centrado en el espacio libre sobre los controles (sin enorme vacío abajo) */
+  body.racing { --pb: calc(min(57.5vw, 300px) + max(28px, env(safe-area-inset-bottom))); }
+  :root { --ft: max(env(safe-area-inset-top, 0px), calc((100dvh - var(--pb) - var(--fh) - 66px) / 2)); }
+  body { background: radial-gradient(130% 55% at 50% 32%, #1c3270 0%, #0a1031 58%, #04050d 100%); }
+  .shell { justify-content: flex-start; }
+  .shell .cabinet-stage { margin-top: var(--ft); }
+  .shell .frame { margin-top: 0; box-shadow: 0 0 0 2px #000, 0 10px 32px rgba(0, 0, 0, .65); }
+  .tmisc.race, .tmisc.back { top: calc(var(--ft) + var(--fh) + 14px); }
+}
+</style>
 <main class="shell">
   <div class="cabinet-stage" id="cabinetStage">
 
@@ -478,7 +503,7 @@ body.cabinet-on.cabinet-race-leader .cabinet-leader-glow {
     </section>
     <section class="overlay dm" id="pauseBox" hidden>
       <div class="card dmbg">
-        <h2>PAUSE</h2>
+        <h2>Pause</h2>
         <div class="row">
           <button class="btn ghost" id="quitBtn" type="button">QUIT RACE</button>
           <button class="btn" id="resumeBtn" type="button">CONTINUE</button>
@@ -1021,7 +1046,7 @@ const TAGS = ['RACING', 'SPEEDWAY', 'MOTOR CLUB', 'FULL BOOST', 'ROAD KING', 'TH
 const PLAYER_DEF = { color: PBLUE, sec: '#e1252b', accent: '#16c878', text: '#ffe12a', num: '41', spons: 'GALLOP', tag: 'HORNET', isPlayer: true };
 
 function resetPlayer() {
-  Object.assign(P, { dist: 0, d: 3, phi: 0, psi: 0, v: 0, steer: 0, gear: 0, shiftT: 0, lapsDone: 0, lapStart: 0, lapTimes: [], time: START_TIME, bestLap: Infinity, dmg: { fl: 0, fr: 0, rl: 0, rr: 0 }, hitCD: 0, recoil: 0, recoilT: 0, damage: 0, damageCD: 0, damageSide: 1, damagePulse: 0, crash: 0, tumble: 0, flip: 0, inv: 0, wallT: 0, sv: 0, braking: false, rpm: 0, thr: 0, place: 0, finished: false, acc: 0, pit: null, pitLift: 0, roadRaise: 0, pitLap: -99, pitServiceDist: -Infinity, pitDwell: 0, pitBypass: false });
+  Object.assign(P, { dist: 0, d: 3, phi: 0, psi: 0, v: 0, steer: 0, gear: 0, shiftT: 0, lapsDone: 0, lapStart: 0, lapTimes: [], time: START_TIME, bestLap: Infinity, dmg: { fl: 0, fr: 0, rl: 0, rr: 0 }, hitCD: 0, recoil: 0, recoilT: 0, damage: 0, damageCD: 0, damageSide: 1, damagePulse: 0, crash: 0, tumble: 0, flip: 0, tumPitch: 0, lift: 0, inv: 0, wallT: 0, sv: 0, braking: false, rpm: 0, thr: 0, place: 0, finished: false, acc: 0, pit: null, pitLift: 0, roadRaise: 0, pitLap: -99, pitServiceDist: -Infinity, pitDwell: 0, pitBypass: false });
   PIT.TT = -1; PIT.lastT = -1; S.pitW = 0; S.pitTail = 0; S.pitCamSt = null;
   S.camPose = null; S.camBlend = null;
 }
@@ -1261,14 +1286,118 @@ function wallHit(into, sgn) {
   thump(clamp(0.3 + into * 0.03, 0.3, 0.75)); beep(130, 0.12, 'square', 0.09);
   if (playerMesh) { const b = playerMesh.b; for (let i = 0; i < 4; i++) spawnPart(b[0] + b[9] * 2.2 - b[3] * sgn, b[1] + 0.5 + b[10] * 2.2 - b[4] * sgn, b[2] + b[11] * 2.2 - b[5] * sgn, true); }
 }
+/* Vuelco Daytona: el video muestra un primer giro aéreo, una breve
+   estabilización casi horizontal y una segunda reacción LATERAL al apoyar
+   sobre el asfalto. Evitamos el cabeceo exagerado de trompa de la versión
+   anterior. La parte final es más corta y devuelve el auto a sus ruedas. */
+const DAYTONA_RECOVERY = .52;
+function daytonaFlightTime(st) {
+  const speed = clamp(.87 + (st.tumV0 || 0)/440, .90, 1.10);
+  return 1.255 * (1 - .033*(st.tumStyle || 0)) / speed * 1.025;
+}
+function tumbleAnim(st, dt, flip) {
+  st.tumT = Math.min(st.tumDur || 2.08, (st.tumT || 0) + dt);
+  const time = st.tumT, dir = st.spinDir || 1;
+  if (flip) {
+    const flightTime = daytonaFlightTime(st);
+    const post = Math.max(0, time - flightTime);
+
+    // Giro con inercia: aprox. 10% más enérgico, sin aumentar vueltas.
+    // Se completa ligeramente antes de tocar el suelo, como en el video.
+    const rollTime = flightTime * .935;
+    const wEnd = 1.50, w0 = 4*Math.PI/rollTime - wEnd;
+    const rr = Math.min(time, rollTime);
+    let angle = w0*rr - .5*(w0-wEnd)*rr*rr/rollTime;
+    if (time > rollTime) {
+      const after = time - rollTime;
+      angle += (wEnd/8)*(1-Math.exp(-8*after))*Math.exp(-7*after);
+    }
+
+    // Salto balístico un poco menos alto. En el suelo sólo hay un rebote
+    // muy corto; la altura de la carrocería se resuelve en placeCar().
+    const vy = 4*3.80/flightTime;
+    const g = 2*vy/flightTime;
+    const flightLift = Math.max(0, vy*time - .5*g*time*time);
+
+    // A diferencia de la versión anterior, la cola NO se levanta durante
+    // casi un segundo. Después del apoyo, el coche se ladea por inercia,
+    // apenas levanta la trompa y cae rápidamente sobre las cuatro ruedas.
+    // La reacción empieza después de un brevísimo apoyo casi horizontal.
+    const u = clamp((post - .035)/(DAYTONA_RECOVERY - .035), 0, 1);
+    const settle = Math.pow(Math.max(0,Math.sin(Math.PI*u)), 1.35);
+    const intensity = 1 + .07*(st.tumStyle || 0);
+    // Recuperación algo más rápida, sin frenar bruscamente el avance.
+    // La segunda reacción es un breve apoyo sobre un costado. No vuelve
+    // a lanzar el auto ni lo hace virar hacia afuera de la trayectoria.
+    const side = .62 * intensity * settle;
+    const nose = -.10 * intensity * settle;
+    st.flip = dir*(angle + side);
+    st.tumPitch = -.045*Math.sin(Math.PI*clamp(time/flightTime,0,1)) + nose;
+    st.lift = flightLift + .13*settle;
+
+    // La carrocería puede girar en el aire, pero al recuperar las ruedas
+    // no debe iniciar un derrape artificial hacia un costado.
+    const yawAir = Math.sin(Math.PI*clamp(time/flightTime,0,1));
+    st.phi = (st.phi0 || 0)*(1-clamp(time/.19,0,1))
+           + dir*(.10*yawAir);
+
+    // NO cambiar st.d para recentrar el auto: era el origen de la
+    // patinada visible hacia el centro de la pista. El vehículo mantiene
+    // el carril que traía al aterrizar (sin teletransportarse).
+    // Conservamos la inercia longitudinal del impacto: durante el apoyo
+    // el auto sigue avanzando, sin arrastre lateral ni teletransporte.
+    st.v *= Math.exp(-(post>0?.10:.15)*dt);
+
+    // Un golpe principal y el apoyo final de las ruedas; nada de sacudidas
+    // decorativas, saltos repetidos ni efectos aleatorios por fotograma.
+    const contact = post>0 ? (post>DAYTONA_RECOVERY-.095 ? 2 : 1) : 0;
+    if ((st.bn || 0) < contact) {
+      st.bn = contact;
+      if (contact === 1) st.v *= .96;
+      else st.v *= .99;
+      if (st === P) {
+        thump(contact === 1 ? .72 : .18);
+        P.crash = Math.max(P.crash, contact === 1 ? .46 : .11);
+        if (contact === 1 && R3) {
+          const fr = frameAt(st.dist);
+          const gx = fr.cx + fr.rx*st.d + fr.tx*1.6;
+          const gy = fr.cy + fr.ry*st.d+.1;
+          const gz = fr.cz + fr.rz*st.d + fr.tz*1.6;
+          for (let i=0;i<7;i++) {
+            const a=(Math.random()-.5)*2.2, b=(Math.random()-.5)*2.5;
+            spawnPart(gx+fr.rx*a+fr.tx*b, gy, gz+fr.rz*a+fr.tz*b, i<2);
+          }
+        }
+      }
+    }
+  } else {
+    // Los trompos originales no cambian.
+    const u = clamp(time/Math.max(.1,st.tumDur||1),0,1);
+    const e = 1-Math.pow(1-u,2.6);
+    st.phi = (st.phi0||0)*(1-e)+TAU*e*dir;
+    st.v *= Math.exp(-.3*dt);
+  }
+}
+
 function tumbleStart(st, kind) {
-  st.kind = kind; st.spinDir = Math.sign(st.steer || (Math.random() - 0.5)) || 1;
-  st.tumble = kind === 'flip' ? 2.1 : 0.9; st.flip = 0; st.crash = kind === 'flip' ? 0.8 : 0.5;
+  st.kind = kind;
+  const wallDir = Math.abs(st.d || 0) > WALL - 5 ? Math.sign(st.d) : 0;
+  st.spinDir = (kind === 'flip' && wallDir) || Math.sign(st.steer || (Math.random() - .5)) || 1;
+  // Pequeña variación según punto, ángulo y velocidad del choque. Se fija al
+  // iniciar el vuelco: no hay vibración aleatoria recalculada cada frame.
+  st.tumV0 = st.v || 0;
+  st.tumStyle = Math.sin(st.dist*.017 + st.d*.31 + st.tumV0*.027);
+  st.tumble = kind === 'flip' ? daytonaFlightTime(st)+DAYTONA_RECOVERY : .9;
+  st.flip = 0; st.tumPitch = 0;
+  st.crash = kind === 'flip' ? .8 : .5;
+  st.tumDur = st.tumble; st.tumT = 0; st.phi0 = st.phi || 0; st.bn = 0; st.lift = 0;
   if (st === P) {
-    // Solo cuando el auto se rompe (no en el trompo): pasa a la cámara 3 durante el vuelco y después vuelve a la que tenía.
-    if (kind === 'flip' && S.mode === 'race' && S.view !== 2 && S.crashView == null) { S.crashView = S.view; S.view = 2; applyView(); }
-    if (kind === 'flip') registerDamage(.54, Math.sign(P.d) || 1);   // el trompo no daña el auto; solo el choque fuerte
-    thump(kind === 'flip' ? 0.9 : 0.7); beep(kind === 'flip' ? 120 : 160, 0.45, 'sawtooth', 0.15);
+    if (kind === 'flip' && S.mode === 'race' && S.view !== 2 && S.crashView == null) {
+      S.crashView = S.view; S.view = 2; applyView();
+    }
+    if (kind === 'flip') registerDamage(.54, Math.sign(P.d) || 1);
+    thump(kind === 'flip' ? .9 : .7);
+    beep(kind === 'flip' ? 120 : 160, .45, 'sawtooth', .15);
   }
 }
 function advance(st, dt) {
@@ -1292,20 +1421,32 @@ function stepPlayer(dt, inp) {
   if (P.tumble > 0) {
     P.tumble -= dt;
     const flip = P.kind === 'flip';
-    P.v *= Math.exp(-(flip ? 1.7 : 2.4) * dt);
-    if (flip) P.flip += dt * 8;
-    P.phi += dt * (flip ? 6 : 7) * P.spinDir;
-    P.psi += (0 - P.psi) * dt * 1.5 + k * P.v * dt;
-    advance(P, dt);
+    // El vuelco nuevo se aplica también si el coche cruza la meta mientras gira.
+    // Antes, cualquier modo distinto de 'race' activaba la rotación antigua.
+    tumbleAnim(P, dt, flip);
+    // Durante el vuelo mantenemos la trayectoria de la versión anterior.
+    // Al apoyar las ruedas no bloqueamos el movimiento: el auto sigue
+    // progresando a lo largo de la pista, sin deriva lateral.
+    // Una vez que las ruedas apoyan, el avance es longitudinal: no
+    // transformamos el cabeceo/rebote visual en una patinada lateral.
+    const onGround = flip && P.tumT >= daytonaFlightTime(P);
+    if (onGround) {
+      P.psi *= Math.exp(-12 * dt);
+      P.dist += P.v * dt / Math.max(0.3, 1 + k * P.d);
+    } else {
+      P.psi += (0 - P.psi) * dt * 1.5 + k * P.v * dt;
+      advance(P, dt);
+    }
     P.d = clamp(P.d, -(WALL - 1.1), WALL - 1.1);
     P.thr = 0; P.braking = false;
-    if (P.tumble <= 0) { P.d = clamp(P.d, -9, 9); P.phi = 0; P.psi = 0; P.v = Math.max(P.v, flip ? 16 : 24); P.flip = 0; P.inv = flip ? 2.2 : 1.1; P.steer = 0; if (S.crashView != null) { S.view = S.crashView; S.crashView = null; applyView(); } }
+    if (P.tumble <= 0) { P.phi = 0; P.psi = 0; P.flip = 0; P.tumPitch = 0; P.lift = 0; P.steer = 0; if (R3 && R3.camAng != null) R3.camAng -= TAU * Math.round(R3.camAng / TAU);   /* la cámara no da la vuelta hacia atrás */   /* sigue su curso: sin reposicionar, sin impulso de velocidad y sin invulnerabilidad */ if (S.crashView != null) { S.view = S.crashView; S.crashView = null; applyView(); } }
     return;
   }
 
   /* dirección: progresiva, se centra rápido al soltar */
   const tg = inp.steer;
-  const rate = (Math.abs(tg) > Math.abs(P.steer) && tg * P.steer >= 0) ? 3.4 : 9;
+  const rate = inp.analog ? ((Math.abs(tg) > Math.abs(P.steer) && tg * P.steer >= 0) ? 9 : 12)   // palanca analógica: sigue el pulgar casi directo
+    : (Math.abs(tg) > Math.abs(P.steer) && tg * P.steer >= 0) ? 3.4 : 9;
   P.steer += clamp(tg - P.steer, -rate * dt, rate * dt);
   P.thr = inp.gas ? 1 : 0; P.braking = !!inp.brake;
 
@@ -1322,7 +1463,8 @@ function stepPlayer(dt, inp) {
 
   // Sin modo de derrape ni zonas: al frenar mientras girás, se reduce el agarre lateral.
   // Al soltar el freno vuelve de manera natural y podés corregir con contravolante.
-  const slipping = inp.brake && P.v > 27 && Math.abs(P.steer) > 0.20;
+  const gA = inp.gasA == null ? (inp.gas ? 1 : 0) : inp.gasA, bA = inp.brakeA == null ? (inp.brake ? 1 : 0) : inp.brakeA;   // 0..1 (teclado = todo o nada)
+  const slipping = inp.brake && bA > 0.5 && P.v > 27 && Math.abs(P.steer) > 0.20;
 
   /* motor y frenos */
   let acc;
@@ -1333,8 +1475,12 @@ function stepPlayer(dt, inp) {
     acc = ACC * ST.acc * GA[P.gear] * p * (P.shiftT > 0 ? 0.15 : 1);
     if (rpm >= 1 && P.gear < 3) acc = 0;
     if (P.gear < 3 && rpm > 1) acc -= ACC * 0.8;
+    if (gA < 0.98) {   // acelerador parcial: menos empuje y una velocidad tope proporcional
+      if (acc > 0) acc *= gA;
+      if (P.v > gearMax(3) * (0.2 + 0.8 * gA)) acc = Math.min(acc, -ACC * 0.35);
+    }
   } else acc = -ACC * 0.35;
-  if (inp.brake) acc = -BRAKE;
+  if (inp.brake) acc = -BRAKE * Math.max(0.2, bA);   // freno proporcional al gatillo
 
   /* agarre lateral, frenada y sobreviraje arcade */
   let aCap = (28 + 9.5 * Math.abs(Math.sin(fr.b))) * ST.grip;
@@ -1375,7 +1521,7 @@ function stepPlayer(dt, inp) {
     P.d = sgn > 0 ? lim : lLim;
     if (into > 0) {
       P.v = Math.max(0, P.v - into * 0.55 - P.v * 0.03);
-      P.psi = -P.psi * 0.15; P.phi = P.psi + (P.phi - P.psi) * 0.4; P.steer *= 0.5; P.wallT = 0.35;
+      P.psi = -P.psi * 0.15; P.phi = P.psi + (P.phi - P.psi) * 0.4; P.steer *= 0.5; P.wallT = 0.35; gpRumble(160, 0.7, 0.4);
       if (into > 6) { P.crash = Math.max(P.crash, 0.35); thump(0.6); }
       if (into > 3.2) wallHit(into, sgn);
       if (P.inv <= 0) {
@@ -1497,7 +1643,12 @@ function updateAI(dt, ref) {
 /* ---- NPC: choques entre ellos, vuelcos y trompos (como el auto principal) ---- */
 function npcCrash(c, kind) {
   if (c.tumble > 0) return;
-  c.kind = kind; c.tumble = kind === 'flip' ? 2.3 : 0.95; c.flip = 0; c.spinDir = Math.random() < 0.5 ? -1 : 1; c.safe = 99; c.mistake = 0;
+  c.kind = kind; c.tumV0 = c.v || 0;
+  c.tumStyle = Math.sin(c.dist*.017 + c.d*.31 + c.tumV0*.027);
+  c.tumble = kind === 'flip' ? daytonaFlightTime(c)+DAYTONA_RECOVERY : .95;
+  c.flip = 0; c.tumPitch = 0; c.tumDur = c.tumble; c.tumT = 0;
+  c.phi0 = c.phi || 0; c.bn = 0; c.lift = 0;
+  c.spinDir = Math.random() < .5 ? -1 : 1; c.safe = 0; c.mistake = 0;
   const gp = Math.abs(cdiff(c.dist - P.dist));
   if (gp < 100 && S.mode !== 'menu') {
     thump(clamp((kind === 'flip' ? 0.7 : 0.45) - gp / 220, 0.1, 0.7));
@@ -1507,17 +1658,24 @@ function npcCrash(c, kind) {
 function npcTumble(c, dt) {
   const k = frameAt(c.dist).k, flip = c.kind === 'flip';
   c.tumble -= dt;
-  c.v *= Math.exp(-(flip ? 1.7 : 2.4) * dt);
-  if (flip) c.flip += dt * 8;
-  c.phi += dt * (flip ? 6 : 7) * c.spinDir;
+  // Sin animación alternativa antigua al entrar en otra fase de carrera.
+  tumbleAnim(c, dt, flip);
   c.psi += (0 - c.psi) * dt * 1.5;
-  c.d += (c.sv || 0) * dt; c.sv = (c.sv || 0) * Math.exp(-3 * dt);
+  const onGround = flip && c.tumT >= daytonaFlightTime(c);
+  if (onGround) {
+    // Recuperación de los rivales: también sin deriva lateral añadida.
+    c.sv = 0;
+    c.psi *= Math.exp(-12 * dt);
+  } else {
+    c.d += (c.sv || 0) * dt;
+    c.sv = (c.sv || 0) * Math.exp(-3 * dt);
+  }
   c.d = clamp(c.d, -(WALL - 1.1), WALL - 1.1);
   c.dist += c.v * dt / Math.max(0.3, 1 + k * c.d);
   if (!c.fin && c.dist >= LAPS * L) c.fin = ++finCount;
   if (c.tumble <= 0) {
-    c.d = clamp(c.d, -9, 9); c.lane = c.d; c.phi = 0; c.psi = 0; c.flip = 0; c.lv = 0; c.sv = 0;
-    c.v = Math.max(c.v, flip ? 16 : 24); c.safe = 2.5; c.evOn = false;
+    c.lane = c.d; c.phi = 0; c.psi = 0; c.flip = 0; c.tumPitch = 0; c.lift = 0; c.lv = 0; c.sv = 0;   // sigue su curso: sin reposicionar, sin impulso y sin invulnerabilidad
+    c.safe = 0; c.evOn = false;
   }
 }
 function npcCollide(dt) {
@@ -1568,7 +1726,10 @@ function menuSetup() {
 }
 function readInput() {
   if (S.optionsOpen) return { gas: false, brake: false, steer: 0 };
-  return { gas: keys.up || touch.up, brake: keys.down || touch.down, steer: ((keys.left || touch.left) ? -1 : 0) + ((keys.right || touch.right) ? 1 : 0) };
+  const kbSteer = ((keys.left || touch.left) ? -1 : 0) + ((keys.right || touch.right) ? 1 : 0);
+  const gasA = Math.max((keys.up || touch.up) ? 1 : 0, GP.gas), brakeA = Math.max((keys.down || touch.down) ? 1 : 0, GP.brake);
+  const padSteer = kbSteer === 0 && GP.steer !== 0;   // el teclado/táctil manda si se usa; si no, la palanca analógica
+  return { gas: gasA > 0.04, brake: brakeA > 0.04, gasA, brakeA, steer: padSteer ? GP.steer : kbSteer, analog: padSteer };
 }
 function autoDrive(target, lat) {
   const fa = frameAt(P.dist + P.v * 0.5), ka = fa.k;
@@ -1674,7 +1835,7 @@ function carContacts(dt) {
      1.º  frena y se desliza hasta quedar de perfil junto a la valla (la pose de la pantalla RESULTS)
      2.º  intenta lo mismo, pierde la cola en un derrape de costado, lo corrige y se aleja
      3.º  se va contra la valla, rebota y queda detenido unos metros más adelante
-     4.º+ se estrella y vuelca varias veces hasta quedar parado, destrozado
+     4.º+ se estrella y usa el mismo vuelco físico de la carrera hasta detenerse
    Todo es función del tiempo (no depende de la entrada del jugador): igual en todos los clientes.
    --------------------------------------------------------------------- */
 const CINE_LEAD = 1.2;   // segundos a velocidad constante antes de la maniobra
@@ -1707,11 +1868,16 @@ function beginSoloFinish(place, completed = true) {
   P.finished = !!completed;
   S.endGoal = !!completed;
   S.finT = 0.001;
+  // No congelar ni sustituir un vuelco que empezó antes de la meta o del tiempo agotado.
+  S.finishRollPending = P.tumble > 0;
+  // El GOAL comienza YA, aunque el coche todavía esté en el aire.
+  // La órbita de cámara tendrá su propio inicio para evitar un salto al aterrizar.
+  S.finCamStart = S.finishRollPending ? null : 0;
+  S.timeoutFinalFrame = 0;
   S.finalT = completed ? raceT : 0;
   S.cine = null;
   S.te = null;
-  S.view = 2; applyView();
-  if (R3) R3.camAng = 0;
+  if (!S.finishRollPending) { S.view = 2; applyView(); if (R3) R3.camAng = 0; }
   msgs = [];
   if (completed) {
     // Igual al index adjunto: GOAL, conducción automática y giro de 180 grados.
@@ -1723,13 +1889,17 @@ function beginSoloFinish(place, completed = true) {
     // terminar apuntando al centro de la pista, nunca al muro de salida.
     S.finLane = inPitAtGoal ? PIT.lane : P.d;
     if (inPitAtGoal) P.pitBypass = true;
-    S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
+    // El final respeta la velocidad de llegada: no aplica un objetivo mínimo
+    // ni acelera artificialmente hasta la velocidad máxima tras cruzar GOAL.
+    S.finCruise = P.v;
+    S.finLastSpeed = P.v; // Límite descendente independiente del piloto automático y la física.
     beep(880, 0.15); setTimeout(() => beep(1320, 0.3), 160);
   } else {
     // Igual al index adjunto: el tiempo agotado congela carrera y cámara;
     // salta a RESULTS, sin giro ni cinematográfica multijugador.
     S.mode = 'timeout';
-    P.v = 0; P.acc = 0; P.thr = 0; P.braking = false;
+    if (!S.finishRollPending) P.v = 0;
+    P.acc = 0; P.thr = 0; P.braking = false;
     for (const c of cars) { c.v = 0; c.run = false; c.ddt = 0; c.lv = 0; }
   }
   if (A.c) { const now = A.c.currentTime;
@@ -1739,30 +1909,70 @@ function beginSoloFinish(place, completed = true) {
   }
 }
 
+// En solitario el GOAL puede continuar con piloto de carril, daños o vuelco.
+// Ningún sistema debe volver a elevar (ni sostener) la velocidad después de meta.
+// El límite se aplica DESPUÉS de la simulación, para incluir la salida de boxes.
+function coastAfterSoloGoal(dt) {
+  if (S.mp || S.mode !== 'finish' || !S.endGoal) return;
+  const prev = Number.isFinite(S.finLastSpeed) ? S.finLastSpeed : P.v;
+  const limit = Math.max(0, prev - ACC * .35 * dt);
+  P.v = Math.max(0, Math.min(P.v, limit));
+  S.finLastSpeed = P.v;
+  P.thr = 0;
+  if (P.v <= .001) { P.v = 0; P.acc = 0; }
+  else P.acc = Math.min(P.acc || 0, -ACC * .35);
+  P.rpm = Math.min(P.rpm || 0, P.v / gearMax(P.gear));
+}
+
 function startMpCine(place) {
   const v0 = clamp(Math.max(P.v, 43), 43, 75);
   S.goalPh = false;
-  S.cine = { place, side: P.d < 0 ? -1 : 1, v0, start: P.dist, d0: P.d, event: false, roll: 0, lift: 0,
+  S.cine = { place, side: P.d < 0 ? -1 : 1, v0, start: P.dist, d0: P.d, event: false,
     hideCar: false, frozenTime: raceT, look: null, plan: 0 };
   cinePlan(S.cine);
+}
+// El resultado online tiene prioridad sobre cualquier vuelco o trompo activo.
+// Solo se resetea la pose VISUAL: no hay teletransporte ni desvío lateral.
+function interruptTumbleForMpResult() {
+  if (!(P.tumble > 0) && !S.finishRollPending) return;
+  P.tumble = 0; P.tumDur = 0; P.tumT = 0;
+  P.flip = 0; P.tumPitch = 0; P.lift = 0; P.flipCamH = 0;
+  P.bn = 0; P.phi = 0; P.psi = 0; P.sv = 0; P.steer = 0;
+  S.finishRollPending = false; S.crashView = null; S.camBlend = null;
 }
 function beginFinish(place, completed = true) {
   if (S.mode === 'finish') {
     P.place = place; S.resultPlace = place;
+    if (S.mp && S.finishRollPending) {
+      // También cubre un ending provisional que llegó antes del estado oficial.
+      interruptTumbleForMpResult();
+      S.view = 2; applyView();
+      if (R3) R3.camAng = 0;
+      startMpCine(place);
+    }
     if (S.cine) S.cine.place = place;
     return;
   }
   P.finished = true; P.place = place; S.resultPlace = place; S.endGoal = !!completed;
   S.mode = 'finish'; S.finT = 0.001;
+  // En Arcade/FREE el GOAL se superpone al vuelco; en online gana RESULTS.
+  S.finishRollPending = !S.mp && P.tumble > 0;
+  S.timeoutFinalFrame = 0;
   // Arcade y FREE no reproducen endings: se muestra RESULTS fijo con la cámara que el jugador eligió.
   // Únicamente las salas online crean el plan de cámara y las maniobras.
   if (S.mp) {
+    interruptTumbleForMpResult();
+    // Sólo al llegar a los resultados online: reparar también el estado del
+    // daño (no sólo ocultar la malla deformada). La carrera queda intacta.
+    P.damage = 0; P.damageSide = 1; P.damagePulse = 0;
+    for (const k in P.dmg) P.dmg[k] = 0;
     S.view = 2; applyView();
     if (R3) R3.camAng = 0;
     startMpCine(place);
   } else {
     S.cine = null;
-    P.v = 0; P.acc = 0; P.thr = 0; P.rpm = 0; P.braking = false;
+    if (!S.finishRollPending) P.v = 0;
+    P.acc = 0; P.thr = 0; P.rpm = 0; P.braking = false;
   }
   S.te = null; msgs = []; P.braking = false;
   if (A.c) { const t = A.c.currentTime;
@@ -1872,7 +2082,10 @@ function rkTick(dt) {
     if (k.fin > 0) { k.fin -= dt; if (k.fin <= 0) { rkFinish(); return; } }
     if (k.left <= 0) rkFinish();
   }
-  // rank / title / view: stay visible until Enter, Escape, Space or Back is pressed.
+  // El título POST-CARRERA es una etapa temporizada de la cinemática.
+  // A los 6,5 segundos pasa solo a las tomas de la demo, sin exigir START.
+  // El SCOREBOARD abierto manualmente sigue a cargo del jugador.
+  if (k.mode === 'title' && k.t >= RK_TITLE) { rkClose(); return; }
 }
 function rkKey(e) {
   const k = S.rk; if (!k) return;
@@ -2050,7 +2263,15 @@ function drawNameEntry() {
 }
 function drawRk() {
   const k = S.rk;
-  if (k.mode === 'name') drawNameEntry(); else if (k.mode === 'title') { drawTitleScreen(k.t); drawPressStart(); } else if (k.mode === 'view') drawScoreboard(); else drawRankBoard(k.page, k.t, k.hi, 'BEGINNER');
+  if (k.mode === 'name') drawNameEntry();
+  else if (k.mode === 'title') {
+    drawTitleScreen(k.t);
+    // Breve fundido antes de volver a las cámaras de la demo.
+    const fade = clamp((k.t - (RK_TITLE - 0.45)) / 0.45, 0, 1);
+    if (fade > 0) { hx.fillStyle = `rgba(0,0,0,${fade})`; hx.fillRect(0, 0, HW, HH); }
+  }
+  else if (k.mode === 'view') drawScoreboard();
+  else drawRankBoard(k.page, k.t, k.hi, 'BEGINNER');
 }
 const MPR_TIME = 6, MPR_SEAT_COL = ['#ff2a2a', '#2a8bff', '#ffe21a', '#27e255', '#ffffff', '#ff8fd0', '#3aa0ff', '#ff8a1a'];
 function mpResOpen() {
@@ -2099,7 +2320,23 @@ function drawMpResults() {
   });
   hx.textBaseline = 'alphabetic';
 }
+function continueEndingRoll(dt) {
+  // La física/animación del vuelco se calcula en un solo lugar, incluso si
+  // durante el vuelo llegó GOAL, se agotó el cronómetro o llegó el resultado online.
+  stepPlayer(dt, {steer:0, gas:false, brake:false, analog:false});
+  return P.tumble <= 0;
+}
 function endingTick(dt) {
+  if (S.finishRollPending) {
+    if (continueEndingRoll(dt)) {
+      S.finishRollPending = false;
+      S.finT = 0.001; // La cinemática comienza DESPUÉS del aterrizaje.
+      S.view = 2; applyView();
+      if (R3) R3.camAng = 0;
+      startMpCine(S.resultPlace || P.place || 1);
+    }
+    return;
+  }
   const c = S.cine;
   S.finT += dt;
   const t = S.finT;
@@ -2133,47 +2370,80 @@ function endingTick(dt) {
     d = t < tI ? lerp(d0, wallHit, Math.pow(hit, 2.2)) : wallHit - side * 1.3 * cSm(t, tI, tI + 0.5);
     phi = t < tI ? side * 0.55 * hit : side * lerp(0.55, -0.38, cSm(t, tI, tI + 0.6)) * 1;
     if (t >= tI + 0.6) phi = side * lerp(-0.38, -0.3, cSm(t, tI + 0.6, tI + 2));
-    if (!c.event && t >= tI) { c.event = true; P.damage = Math.max(P.damage, .68); P.damageSide = side; P.crash = .7; thump(.7); }
+    if (!c.event && t >= tI) { c.event = true; P.crash = .7; thump(.7); }
   } else {
-    // Choque contra la valla y vuelco en tres tiempos, sin giros bruscos:
-    //  1) el auto ya viene con la cola suelta y toca la valla de costado
-    //  2) el golpe lo levanta: se inclina sobre las ruedas de adentro (roll gradual) y sube en una parábola
-    //  3) cae, da un último giro sobre el asfalto, rebota dos veces cada vez más chico y queda sobre las ruedas
-    const tI = tb + CINE_IMPACT[4], hit = clamp((t - tb) / CINE_IMPACT[4], 0, 1);
-    const Tf = 4.2, u = clamp((t - tI) / Tf, 0, 1), el = Math.max(0, t - tI);
-    v = t < tI ? v0 : v0 * 0.8 * Math.pow(1 - u, 1.35);
+    // 4.º y siguientes: el FINAL usa exactamente el mismo vuelco que la carrera.
+    // Se elimina definitivamente el antiguo giro cinematográfico con cSm,
+    // dos vueltas coreografiadas y rebotes prefijados.
+    const tI = tb + CINE_IMPACT[4];
+    const hit = clamp((t - tb) / CINE_IMPACT[4], 0, 1);
     const wallHit = side * (WALL - 1.25);
-    d = t < tI ? lerp(d0, wallHit, Math.pow(hit, 2.2))
-      : lerp(wallHit, wallHit - side * 5.5, cSm(t, tI + 0.15, tI + Tf));
-    phi = t < tI ? side * 0.5 * hit
-      : side * (0.5 - 0.95 * cSm(t, tI, tI + 2.4) + 0.2 * cSm(t, tI + 2.4, tI + Tf));
-    // El roll arranca despacio (el auto "se tumba") y acelera: la primera vuelta ocurre en el aire (salto del golpe),
-    // la segunda ya sobre el asfalto, más lenta; termina en dos vueltas exactas, o sea sobre las ruedas.
-    c.roll = t < tI ? 0 : -side * (TAU * cSm(el, 0.1, 1.7) + TAU * cSm(el, 1.5, Tf));
-    // Altura: sin hundir la carrocería en el asfalto (según el ángulo) + el salto del golpe + dos rebotes que se apagan.
-    const rr = Math.abs(c.roll), ground = 0.95 * Math.abs(Math.sin(rr)) + 1.55 * Math.max(0, -Math.cos(rr));
-    const air = 1.9 * Math.sin(Math.PI * clamp(el / 1.6, 0, 1)) + 0.55 * Math.sin(Math.PI * clamp((el - 2.0) / 0.7, 0, 1)) + 0.2 * Math.sin(Math.PI * clamp((el - 2.8) / 0.5, 0, 1));
-    c.lift = t < tI ? 0 : ground + air;
-    if (!c.event && t >= tI) { c.event = true; P.damage = Math.max(P.damage, .85); P.damageSide = side; P.crash = .8; thump(.9); beep(120, 0.45, 'sawtooth', 0.12); }
-    if (!c.land && t >= tI + 1.6) { c.land = true; thump(.7); }
-    if (!c.land2 && t >= tI + 2.7) { c.land2 = true; thump(.35); }
+    if (t < tI) {
+      v = v0;
+      d = lerp(d0, wallHit, Math.pow(hit, 2.2));
+      phi = side * 0.5 * hit;
+    } else {
+      if (!c.event) {
+        // Único disparador al llegar a la valla: el mismo evento de la carrera.
+        c.event = true;
+        P.v = v0 * 0.76;
+        P.d = wallHit;
+        P.phi = side * 0.5;
+        P.psi = 0;
+        tumbleStart(P, 'flip');
+      }
+      if (P.tumble > 0) {
+        // Misma física que un vuelco en carrera: no pisar phi/d/psi ni
+        // mover dist dos veces; de lo contrario aparece el salto al finalizar.
+        continueEndingRoll(dt);
+      } else {
+        P.v *= Math.exp(-1.1 * dt);
+        P.dist += P.v * dt / Math.max(.3, 1 + frameAt(P.dist).k * P.d);
+      }
+      P.acc = 0; P.thr = 0; P.braking = false; P.steer = 0;
+      P.rpm = 0; P.gear = 3; P.inv = 1;
+      P.crash = Math.max(0, P.crash - dt);
+      if (t >= END_TOTAL && P.tumble <= 0) mpResOpen();
+      return; // Evita que el guion reemplace la posición/rotación del vuelco.
+    }
   }
   P.v = Math.max(0, v); P.d = clamp(d, -WALL + 1.05, WALL - 1.05); P.phi = phi; P.psi = 0;
   P.dist += P.v * dt;
   P.acc = acc; P.thr = 0; P.braking = false; P.steer = 0; P.rpm = 0; P.gear = 3; P.inv = 1;
   P.crash = Math.max(0, P.crash - dt);
-  if (t >= END_TOTAL) mpResOpen();
+  if (t >= END_TOTAL && P.tumble <= 0) mpResOpen();
 }
 function sim(dt) {
   if (S.mpr) { mpResTick(dt); return; }
   if (S.rk) { rkTick(dt); return; }
   const racing = S.mode === 'race';
   if (S.mode === 'timeout' && !S.mp) {
+    if (S.finishRollPending) {
+      if (continueEndingRoll(dt)) {
+        S.finishRollPending = false;
+        S.timeoutFinalFrame = 2; // Dibujar la pose final derecha antes de congelarla.
+        P.v = 0; P.acc = 0; P.thr = 0; P.braking = false;
+      }
+      return;
+    }
     S.finT += dt;
     if (S.finT + SOLO_TO_OFF >= SOLO_END_TOTAL) showMenu();
     return;
   }
   if (S.mode === 'finish' && S.mp) { endingTick(dt); return; }
+  if (S.mode === 'finish' && S.finishRollPending) {
+    // El reloj del GOAL sigue corriendo mientras el auto completa el vuelco.
+    S.finT += dt;
+    const rollDone = continueEndingRoll(dt);
+    coastAfterSoloGoal(dt);
+    if (rollDone) {
+      S.finishRollPending = false;
+      S.finCamStart = S.finT; // La órbita empieza desde cero, sin saltar a mitad del plano.
+      S.view = 2; applyView();
+      if (R3) R3.camAng = 0;
+    }
+    return;
+  }
   if (S.mode === 'finish' && S.finT >= SOLO_END_RES0) {
     // RESULTS (Arcade / FREE): el mundo, los rivales y el cronómetro quedan congelados.
     S.finT += dt;
@@ -2193,17 +2463,24 @@ function sim(dt) {
     return;
   }
   let inp;
-  if (racing) inp = (S.mp && P.finished) ? autoDrive(Math.max(46, P.v * 0.98), P.d) : readInput();
+  if (racing) {
+    if (S.mp && P.finished) {
+      // Entre la meta y el resultado oficial: el coche rueda por inercia.
+      // Antes el autopiloto aceleraba hasta 46 m/s aunque llegara más lento.
+      inp = autoDrive(0, P.d); inp.gas = false; inp.brake = false;
+    } else inp = readInput();
+  }
   else {
     S.finT += dt;
     if (S.mode === 'finish') {
       if (S.finLane == null) S.finLane = P.d;
-      if (!(S.finCruise > 0)) S.finCruise = clamp(Math.max(P.v * 0.92, 54), 46, MAXV * 0.95);
-      const cruise = clamp(S.finCruise + Math.min(10, S.finT * 1.6), 46, MAXV * 0.98);
+      // Sólo dirigimos el auto tras GOAL. El acelerador queda suelto;
+      // la propia física lo hace perder velocidad con naturalidad.
       if (PIT.on && !S.mp && P.d > PIT.sep &&
           pitRel(P.dist) >= PIT.ex0 + 10 && pitRel(P.dist) <= PIT.ex1 + 45)
         S.finLane = 10.5;
-      inp = autoDrive(cruise, S.finLane);
+      inp = autoDrive(0, S.finLane);
+      inp.gas = false; inp.brake = false;
       // Desenlace visual: el ganador posa; segundo derrapa, tercero choca,
       // cuarto o inferior vuelca. No influye en el orden del servidor.
       const c = S.cine, t = S.finT;
@@ -2221,10 +2498,27 @@ function sim(dt) {
   }
   if (racing && P.pit) { inp = pitDrive(dt); P.v = P.pit.vNew; }   // en boxes el auto va solo; el juego sigue corriendo
   else inp = pitBypassControl(dt, inp); // pit cerrado: giro físico de regreso a pista, incluso al terminar en GOAL
+  if (S.mode === 'finish' && !S.mp) {
+    // La salida del pit también puede controlar el volante, pero nunca debe
+    // pisar el acelerador de nuevo ni dejar el motor a fondo.
+    inp.gas = false;
+    inp.brake = false;
+    // Frenada gradual de llegada a RESULTS: sin detenerse de golpe en el
+    // último cuadro ni alterar la animación de GOAL o la cámara.
+    const remaining = Math.max(1 / 60, SOLO_END_RES0 - S.finT);
+    const naturalDecel = ACC * 0.35;
+    const requiredDecel = P.v / remaining;
+    if (S.finT > 2.3 && P.v > 0.7 && requiredDecel > naturalDecel) {
+      inp.brake = true;
+      inp.brakeA = clamp(requiredDecel / BRAKE, 0.10, 0.80);
+    }
+  }
   P.prevDist = P.dist; P.prevD = P.d;
   stepPlayer(dt, inp);
   if (P.pit) pitAfter(dt); else if (racing) pitEnter(dt);
   pitTick(dt);
+  // GOAL: conservar el impulso, pero siempre desacelerando de forma continua.
+  coastAfterSoloGoal(dt);
   // Efectos físicos para la escena final, usando los mismos mecanismos del juego.
   if (S.mode === 'finish' && S.cine) {
     const c = S.cine, t = S.finT;
@@ -2234,13 +2528,10 @@ function sim(dt) {
         P.psi = Math.max(P.psi, 0.35); P.phi = 0.72;
         P.v = Math.max(P.v, 41);
       } else if (c.place === 3) {
-        P.damage = Math.max(P.damage, 0.46); P.damageSide = 1;
+        // La escena puede mostrar un roce, sin deformar el coche en RESULTS.
         P.crash = 0.65; P.psi = 0.50; P.phi = 0.85;
         P.v = Math.max(P.v * 0.5, 24);
         thump(0.6);
-      } else if (c.place >= 4) {
-        P.damage = Math.max(P.damage, 0.76); P.damageSide = 1;
-        tumbleStart(P, 'flip'); P.tumble = 2.4;
       }
     }
     // Los coches se alejan en 2°/3°; al terminar RESULTS queda el último fotograma.
@@ -3557,7 +3848,7 @@ function buildCar(def, shared, renderer, isPlayer) {
   }
   const damageModel = isPlayer ? { spoiler, spL, spR, cab, rearBump, rearLower, hoodDamage } : null;
   const sh = new THREE.Mesh(shared.shadowGeo, shared.shadowMat); sh.position.y = .045; g.add(sh);
-  return { group: g, wheels, hubs, bodyMat, cabMat, lowerMat, isPlayer, damageModel, glassSurfaces, paints, bumpMat: isPlayer ? bumpMat : null, sideGlassMat: isPlayer ? glass : null, b: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] };
+  return { group: g, shadow:sh, wheels, hubs, bodyMat, cabMat, lowerMat, isPlayer, damageModel, glassSurfaces, paints, bumpMat: isPlayer ? bumpMat : null, sideGlassMat: isPlayer ? glass : null, b: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] };
 }
 
 /* ---- partículas: humo de derrape y chispas ---- */
@@ -3891,18 +4182,53 @@ function placeCar(m, st, dt, tumbling) {
   let roll = clamp(f.k * spd * spd * 0.0008, -0.05, 0.05) + (st.steer || 0) * 0.02 * (spd / MAXV);
   const pitchT = clamp(-(st.acc || 0) * 0.0022, -0.03, 0.03);
   st.pS = st.pS === undefined ? pitchT : st.pS + (pitchT - st.pS) * Math.min(1, (dt || 0.016) * 5);
-  const pitch = st.pS;
-  const filmRoll = st === P && S.mode === 'finish' && S.cine && S.cine.place >= 4;
-  if (tumbling || filmRoll) {
-    const flip = filmRoll ? S.cine.roll : st.flip;
-    roll += flip; py += filmRoll ? S.cine.lift : Math.abs(Math.sin(flip * 0.5)) * 2.6;
-  }
+  // La misma rotación/cabeceo físico de Daytona se dibuja en carrera y meta.
+  const pitch = st.pS + (tumbling ? (st.tumPitch || 0) : 0);
+  if (tumbling) roll += st.flip;
   const cr = Math.cos(roll), sr = Math.sin(roll);
   let x1x = xx * cr + yx * sr, x1y = xy * cr + yy * sr, x1z = xz * cr + yz * sr;
   let y1x = -xx * sr + yx * cr, y1y = -xy * sr + yy * cr, y1z = -xz * sr + yz * cr;
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   const y2x = y1x * cp + zx * sp, y2y = y1y * cp + zy * sp, y2z = y1z * cp + zz * sp;
   const z2x = -y1x * sp + zx * cp, z2y = -y1y * sp + zy * cp, z2z = -y1z * sp + zz * cp;
+  const flipping = tumbling && st.kind === 'flip';
+  if (flipping) {
+    // En la versión anterior el auto rotaba alrededor del suelo: la carrocería
+    // atravesaba la pista y después era levantada artificialmente. Ahora
+    // gira alrededor de su centro de masa (~0.82 m). La altura que evita
+    // la penetración se calcula con las dimensiones REALES de la carrocería.
+    const mx = px, my = py, mz = pz;
+    const dotX = f.ux*x1x+f.uy*x1y+f.uz*x1z;
+    const dotY = f.ux*y2x+f.uy*y2y+f.uz*y2z;
+    const dotZ = f.ux*z2x+f.uy*z2y+f.uz*z2z;
+    const clearance = 1.09*Math.abs(dotX) + .83*Math.abs(dotY)
+                    + 2.59*Math.abs(dotZ);
+    const comH = Math.max(.82 + (st.lift||0), clearance);
+    px += f.ux*comH - y2x*.82;
+    py += f.uy*comH - y2y*.82;
+    pz += f.uz*comH - y2z*.82;
+    st.flipCamH = comH-.82;
+
+    // La sombra NO gira ni salta con el auto. Se desacopla al despegar y
+    // permanece proyectada sobre la pista hasta el aterrizaje.
+    if (m.shadow) {
+      if (m.shadow.parent===m.group) {
+        m.group.remove(m.shadow); R3.scene.add(m.shadow);
+      }
+      m.shadow.position.set(mx+f.ux*.045,my+f.uy*.045,mz+f.uz*.045);
+      const sq=basisQuat(xx,xy,xz,yx,yy,yz,zx,zy,zz);
+      m.shadow.quaternion.set(sq[0],sq[1],sq[2],sq[3]);
+      const shs = 1 + .035*(st.lift || 0);
+      m.shadow.scale.set(shs,1,shs);
+    }
+  } else {
+    st.flipCamH = 0;
+    if (m.shadow && m.shadow.parent!==m.group) {
+      m.shadow.parent.remove(m.shadow); m.group.add(m.shadow);
+      m.shadow.position.set(0,.045,0);
+      m.shadow.quaternion.identity(); m.shadow.scale.set(1,1,1);
+    }
+  }
   const q = basisQuat(x1x, x1y, x1z, y2x, y2y, y2z, z2x, z2y, z2z);
   m.group.position.set(px, py, pz); m.group.quaternion.set(q[0], q[1], q[2], q[3]);
   m.b = [px, py, pz, x1x, x1y, x1z, y2x, y2y, y2z, z2x, z2y, z2z];
@@ -3925,7 +4251,14 @@ function updateCamera(st, dt, snap) {
   const cam = R3.camera, f = frameAt(st.dist);
   const raise = st === P ? (st.roadRaise || 0) : 0;
   const bx = f.cx + f.rx * st.d + f.ux * raise, by = f.cy + f.ry * st.d + f.uy * raise, bz = f.cz + f.rz * st.d + f.uz * raise;
-  const a = 0.45 * st.phi + 0.55 * st.psi;
+  // Durante los TROMPOS, el auto gira pero la cámara NO debe copiar su
+  // rotación. Mantiene la orientación que tenía al comenzar el trompo;
+  // después retoma suavemente el seguimiento habitual. Esto no modifica
+  // ni la física ni las rotaciones de la carrocería.
+  const playerTumbling = st === P && st.tumble > 0 && (S.mode === 'race' || S.finishRollPending);
+  const a = playerTumbling && st.kind === 'spin' ? R3.camAng
+    : playerTumbling && st.kind === 'flip' ? st.psi
+    : 0.45 * st.phi + 0.55 * st.psi;
   R3.camAng += (a - R3.camAng) * (snap ? 1 : Math.min(1, dt * 6));
   const ca = Math.cos(R3.camAng), sa = Math.sin(R3.camAng);
   const fx = f.tx * ca + f.rx * sa, fy = f.ty * ca + f.ry * sa, fz = f.tz * ca + f.rz * sa;
@@ -3933,7 +4266,7 @@ function updateCamera(st, dt, snap) {
   const v = VIEWS[S.view];
   const endCam = st === P && S.mode === 'finish' && !!S.cine && P.finished && S.finT > 0;
   const mpGoal = S.mp && S.mode === 'race' && P.finished && P.finAt != null, gT = mpGoal ? Math.max(0.001, mpNow() - P.finAt) : S.finT;
-  const soloEndCam = st === P && P.finished && gT > 0 && (mpGoal || (!S.mp && S.mode === 'finish'));
+  const soloEndCam = st === P && P.finished && gT > 0 && !S.finishRollPending && (mpGoal || (!S.mp && S.mode === 'finish'));
   const shake = S.mode === 'finish' ? 0 : (P.crash > 0 && S.mode !== 'menu' ? P.crash * 0.5 : 0) + (st.v > 60 ? (st.v - 60) * 0.0012 : 0);
   let px, py, pz, lx, ly, lz, fov;
   if (S.mode === 'menu') {
@@ -4019,7 +4352,9 @@ function updateCamera(st, dt, snap) {
   } else if (soloEndCam) {
     // Plano exacto de la referencia para ARCADE y FREE: vista 3 -> órbita de 180°
     // que termina frente al auto, mientras éste se maneja solo.
-    const u = clamp(gT / 4.0, 0, 1), e = u * u * (3 - 2 * u);
+    const camT = !S.mp && S.mode === 'finish' && S.finCamStart != null
+      ? Math.max(0, S.finT - S.finCamStart) : gT;
+    const u = clamp(camT / 4.0, 0, 1), e = u * u * (3 - 2 * u);
     const ang = Math.PI * e, ct = Math.cos(ang), stt = Math.sin(ang);
     const distance = 5.9, height = 2.05;
     px = bx - fx * distance * ct + f.rx * distance * stt + f.ux * height;
@@ -4070,6 +4405,14 @@ function updateCamera(st, dt, snap) {
   }
   if (S.mode === 'timeout') { if (S.holdFov == null) S.holdFov = cam.fov; fov = S.holdFov; }   // al terminar el tiempo la cámara queda como estaba
   if (ip) { const e = ip.e; px = lerp(ip.px, px, e); py = lerp(ip.py, py, e); pz = lerp(ip.pz, pz, e); lx = lerp(ip.lx, lx, e); ly = lerp(ip.ly, ly, e); lz = lerp(ip.lz, lz, e); fov = lerp(ip.fov, fov, e); }
+  // Durante el vuelo la cámara sube sólo un poco y mira hacia la carrocería.
+  // Sigue mirando al horizonte, no rota con el auto ni agranda su tamaño.
+  if (st === P && st.kind === 'flip' && st.tumble > 0 && (S.mode === 'race' || S.finishRollPending) && px !== undefined) {
+    const h = st.flipCamH || st.lift || 0;
+    px += fux * h * 0.16; py += fuy * h * 0.16; pz += fuz * h * 0.16;
+    lx += fux * h * 0.63; ly += fuy * h * 0.63; lz += fuz * h * 0.63;
+    fov += Math.min(5, h * 0.85);
+  }
   // Transición discreta 1-4: NO recorrer grandes distancias entre vistas.
   // La cámara H, el PIT, la largada y el final mantienen sus reglas propias.
   if (st === P && S.camBlend) {
@@ -4469,7 +4812,7 @@ function pmDraw(m) {
   buildTitleFx();
   if (TFX) { hx.drawImage(TFX.bg, 0, 0, HW, 40, x, y, w, 24); hx.drawImage(TFX.bg, 0, 406, HW, 44, x, y + h - 24, w, 24); }
   else { hx.fillStyle = '#1b1b1f'; hx.fillRect(x, y, w, 24); hx.fillRect(x, y + h - 24, w, 24); }
-  mmPill('PAUSE', 400, y + 30, 200);
+  mmPill('Pause', 400, y + 30, 200);
   m.hit = [];
   PM_ITEMS.forEach((n, i) => { m.hit.push(mmItem(n, 324, y + 116 + i * 52, m.sel === i)); });
 }
@@ -4678,8 +5021,9 @@ function mpApplyResult(state) {
     P.dist = Math.max(P.dist, (LAPS - 1) * L + 30);
   }
   if (!(S.mode === 'race' || S.mode === 'countdown' || S.mode === 'finish')) return;
-  if (S.mode === 'race' && NET.firstFin != null && mpNow() < NET.firstFin + GOAL_END) return;   // el GOAL del primero en llegar termina y recién ahí arrancan las cinemáticas de todos
-  if (S.mode !== 'finish') beginFinish(place, P.lapsDone >= LAPS);
+  // El resultado OFICIAL del servidor se muestra en el acto: no esperar al
+  // GOAL anterior ni a que termine un vuelco que ya estaba en progreso.
+  if (S.mode !== 'finish' || S.finishRollPending) beginFinish(place, P.lapsDone >= LAPS);
   P.place = place; S.resultPlace = place;
   if (S.cine) { S.cine.place = place; S.cine.frozenTime = Math.max(0, (state.resultsAt || state.finishAt || state.deadline) - state.raceAt); }
   if (state.resultsAt || state.finishAt) raceT = Math.max(0, (state.resultsAt || state.finishAt) - state.raceAt);
@@ -4785,7 +5129,7 @@ function startRaceMP(ord) {
     }
   }
   S.camS = P.dist + 14 + PACE * CD_A;
-  S.te = null; S.mode = 'countdown'; S.cd = Math.max(0, (NET.state ? NET.state.raceAt - mpNow() : CD_TOTAL)); S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.crashView = null; S.mpr = null; S.rk = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; $('touch').dataset.trans = S.trans;
+  S.te = null; S.mode = 'countdown'; S.cd = Math.max(0, (NET.state ? NET.state.raceAt - mpNow() : CD_TOTAL)); S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.finishRollPending = false; S.finCamStart = 0; S.finLastSpeed = null; S.timeoutFinalFrame = 0; S.crashView = null; S.mpr = null; S.rk = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; $('touch').dataset.trans = S.trans;
   $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true; S.pm = null;
   mpPub({ p: null });
 }
@@ -4899,7 +5243,11 @@ function mpSend() {
   const now = performance.now();
   if (now - NET.lastSend < 32) return; // ~30 Hz de inputs
   NET.lastSend = now;
-  const inp = readInput();
+  // El servidor también debe soltar el acelerador al cruzar GOAL.
+  // Antes se enviaba readInput() aunque la física local ya iba por inercia:
+  // al mantener la tecla, el snapshot oficial volvía a acelerar y hacía
+  // oscilar el velocímetro (p. ej. 281/282 km/h).
+  const inp = P.finished ? { gas: false, brake: false, steer: 0 } : readInput();
   try { NET.r.input({ rid: NET.state.rid, seq: ++NET.inputSeq,
     gas: !!inp.gas, brake: !!inp.brake, steer: clamp(inp.steer, -1, 1), gear: P.gear | 0 }); }
   catch (e) { if (!mpSend.warn) { mpSend.warn = true; console.warn('Input online', e); } }
@@ -4914,11 +5262,13 @@ function mpSend() {
 function mpProjectOwnPose(p, age) {
   const q = { dist: p[0], d: p[1], v: p[2], psi: p[3], phi: p[4] };
   if (age <= 0) return q;
-  const inp = readInput();
+  // La extrapolación local tiene que predecir las MISMAS entradas neutras
+  // que enviamos al servidor tras GOAL. Si no, contradice el frenado real.
+  const inp = P.finished ? { gas: false, brake: false, steer: 0 } : readInput();
   const gear = clamp(p[8] | 0, 0, 3);
   // El servidor envía la marcha confirmada, pero todavía no la posición exacta del volante;
   // tomamos la dirección local actual, que es la que el jugador está viendo.
-  const steer = P.steer;
+  const steer = P.finished ? 0 : P.steer;
   const n = Math.max(1, Math.ceil(age * 60)), dt = age / n;
   for (let i = 0; i < n; i++) {
     const f = frameAt(q.dist), k = f.k, rpm = q.v / gearMax(gear);
@@ -4978,7 +5328,7 @@ function mpReconcile(dt) {
   // arrastrar el auto hacia una extrapolación recta mientras está doblando.
   const target = mpProjectOwnPose(p, age);
   const gap = target.dist - P.dist, lateral = target.d - P.d;
-  const turning = Math.abs(readInput().steer) > 0.01;
+  const turning = !P.finished && Math.abs(readInput().steer) > 0.01;
   // Tras un choque o una pestaña suspendida el servidor sigue siendo autoridad.
   // Para desvíos normales, una corrección suave evita la sensación de patinaje.
   if (Math.abs(gap) > 12 || Math.abs(lateral) > 5) {
@@ -5783,7 +6133,7 @@ function soloDrawGoal(t) {
   hx.restore(); hx.globalAlpha = 1;
 }
 
-function endClock() { return S.mode === 'timeout' ? S.finT + (S.mp ? TO_OFF : SOLO_TO_OFF) : (S.mode === 'finish' ? S.finT : null); }
+function endClock() { if (S.finishRollPending) return null; return S.mode === 'timeout' ? S.finT + (S.mp ? TO_OFF : SOLO_TO_OFF) : (S.mode === 'finish' ? S.finT : null); }
 function tw(str, size) { hx.save(); hx.font = '400 ' + size + 'px ' + F1; const w = hx.measureText(str).width; hx.restore(); return w; }
 function drawGoal(t) {
   const k = clamp(t / 0.4, 0, 1), sc = 1 + (1 - k) * 2.2 + Math.sin(t * 7) * 0.02;
@@ -5947,11 +6297,12 @@ function updateDamageMesh() {
   if (!playerMesh || !playerMesh.damageModel) return;
   // Restaurado del archivo original: sólo el leve ladeo de la cabina.
   // El golpe se aplica de una vez, NO progresivamente.
-  const bent = P.damage > 0 ? 1 : 0;
+  const pristineMpResults = S.mp && (S.mode === 'finish' || !!S.mpr);
+  const bent = !pristineMpResults && P.damage > 0 ? 1 : 0;
   const m = playerMesh.damageModel, side = P.damageSide || 1;
   // El capó se abolla EXCLUSIVAMENTE al golpear una pared con la esquina delantera.
   // Ni autos, ni CPU, ni vuelcos, ni la animación de daño general lo deforman.
-  setHoodImpact(m.hoodDamage, !!P.dmg.fl, !!P.dmg.fr);
+  setHoodImpact(m.hoodDamage, !pristineMpResults && !!P.dmg.fl, !pristineMpResults && !!P.dmg.fr);
   m.cab.scale.set(1, 1, 1);
   const rx = -0.025 * bent, rz = side * 0.115 * bent, py = 1.0;
   m.cab.rotation.set(rx, 0, rz);
@@ -6032,7 +6383,8 @@ function render(dt) {
   const showP = true;
   playerMesh.group.visible = !(S.mode === 'finish' && S.cine && S.cine.hideCar);
   if (S.mp && S.mode === 'countdown') S.tags.push({ seat: S.mySeat || mpSeat(mpMyPeer()), g: playerMesh.group, mine: true });
-  if (S.mode !== 'timeout') placeCar(playerMesh, P, dt, P.tumble > 0 && P.kind === 'flip');
+  const timeoutDrawRoll = S.mode === 'timeout' && (S.finishRollPending || S.timeoutFinalFrame > 0);
+  if (S.mode !== 'timeout' || timeoutDrawRoll) placeCar(playerMesh, P, dt, P.tumble > 0 && P.kind === 'flip');
   if (S.mode !== 'timeout') animateCarGlass(playerMesh, P, dt);
   updateDamageMesh(dt);
   if (BOARD && (S.t - (BOARD.chk || 0) > 0.25 || S.t < (BOARD.chk || 0))) { BOARD.chk = S.t; updateBoard(false); }
@@ -6048,7 +6400,8 @@ function render(dt) {
       spawnPart(b[0] + b[3] * sg, b[1] + b[4] * sg + 0.6, b[2] + b[5] * sg, true);
     }
   }
-  if (S.mode !== 'timeout') { updateParts(dt); updateCamera(target, dt, false); }
+  if (S.mode !== 'timeout' || timeoutDrawRoll) { updateParts(dt); updateCamera(target, dt, false); }
+  if (S.timeoutFinalFrame > 0) S.timeoutFinalFrame--;
   if (S.rk && S.rk.mode === 'name' && S.rk.use3d) { try { renderNameCar(); } catch (e) { S.rk.use3d = false; console.error(e); } }
   else if (S.rk || S.mpr || (S.mode === 'menu' && (S.lb || S.mm || S.cs || S.ms || S.gs))) R3.renderer.clear();   // durante las pantallas de selección no se ve la demo por detrás
   else R3.renderer.render(R3.scene, R3.camera);
@@ -6135,7 +6488,7 @@ function showMenu(keepSel) {
   if (S.optionsOpen) { S.optionsOpen=false; keyCapture=null; optionsReturnToGame=false; $('optionsPanel').hidden=true; }
   voiceStop();
   const mpBack = !!(S.mp && NET.r); if (mpBack) keepSel = true;
-  LAPS = 4; S.mode = 'menu'; S.paused = false; msgs = []; S.te = null; S.finT = 0; S.cine = null; S.crashView = null; S.mpr = null; S.rk = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; S.resultPlace = 20; S.demoT = 0; S.sel = !!keepSel; if (!keepSel) { S.mm = null; S.cs = null; S.ms = null; S.gs = null; } repaintPlayer(S.trans); S.holdFov = null; resCache = null; DEMO.away = null; S.curve = null;
+  LAPS = 4; S.mode = 'menu'; S.paused = false; msgs = []; S.te = null; S.finT = 0; S.cine = null; S.finishRollPending = false; S.finCamStart = 0; S.finLastSpeed = null; S.timeoutFinalFrame = 0; S.crashView = null; S.mpr = null; S.rk = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; S.resultPlace = 20; S.demoT = 0; S.sel = !!keepSel; if (!keepSel) { S.mm = null; S.cs = null; S.ms = null; S.gs = null; } repaintPlayer(S.trans); S.holdFov = null; resCache = null; DEMO.away = null; S.curve = null;
   if (document.body) document.body.dataset.menu = '1';
   resetPlayer(); makeCars(); finCount = 0; raceT = 0;
   // Restaurar los NPC originales cuando se vuelve de multiplayer al modo individual.
@@ -6179,7 +6532,7 @@ function startRace() {
   P.d=3.75; P.v=PACE; P.dist=-back; P.gear=1; P.steer=0; P.psi=0; P.phi=0; P.inv = CD_TOTAL + 0.5;
   cars.forEach(c => { c.v=PACE; c.run=true; c.dist -= back; });
   S.camS = P.dist + 14 + PACE * CD_A;
-  S.te = null; S.mode = 'countdown'; S.cd = CD_TOTAL; S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.crashView = null; S.mpr = null; S.rk = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; $('touch').dataset.trans = S.trans;
+  S.te = null; S.mode = 'countdown'; S.cd = CD_TOTAL; S.paused = false; S.go = 0; S.finT = 0; S.cine = null; S.finishRollPending = false; S.finCamStart = 0; S.finLastSpeed = null; S.timeoutFinalFrame = 0; S.crashView = null; S.mpr = null; S.rk = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; $('touch').dataset.trans = S.trans;
   $('menu').hidden = true; $('end').hidden = true; $('pauseBox').hidden = true; S.pm = null;
 }
 function showEnd() {
@@ -6623,6 +6976,98 @@ window.addEventListener('resize', resize); window.addEventListener('orientationc
 if (typeof ResizeObserver !== 'undefined') new ResizeObserver(resize).observe($('frame'));
 // Táctil: botones de cámara / pausa / volver (simulan las teclas) y pantalla completa horizontal al primer toque
 const keySim = code => window.dispatchEvent(new KeyboardEvent('keydown', { code, key: code, bubbles: true }));
+
+/* ---------------------------------------------------------------------
+   MANDO / JOYSTICK (Gamepad API) + controles analógicos
+   Conducción: palanca izquierda (o cruceta) = dirección analógica · RT = acelerador analógico (A también) ·
+   LT = freno analógico (B también) · RB / LB = subir / bajar marcha · Y = cámara · X (mantener) = vista H · Start = pausa.
+   Menús: cruceta o palanca = mover · A / Start = aceptar · B = volver.
+   --------------------------------------------------------------------- */
+const GP = { on: false, id: '', steer: 0, gas: 0, brake: 0 };
+let gpPrev = [], gpRep = { dir: '', t: 0, n: 0 }, gpPad = null, gpToastEl = null, gpToastT = 0;
+const keyUpSim = code => window.dispatchEvent(new KeyboardEvent('keyup', { code, key: code, bubbles: true }));
+function gpToast(msg) {
+  try {
+    if (!gpToastEl) {
+      gpToastEl = document.createElement('div');
+      gpToastEl.style.cssText = 'position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:99999;pointer-events:none;padding:6px 14px;border-radius:8px;background:rgba(0,0,0,.82);border:2px solid #ffd400;color:#ffd400;font:700 14px/1.2 system-ui,sans-serif;letter-spacing:.08em;transition:opacity .3s;opacity:0';
+      document.body.appendChild(gpToastEl);
+    }
+    gpToastEl.textContent = msg; gpToastEl.style.opacity = '1';
+    clearTimeout(gpToastT); gpToastT = setTimeout(() => { gpToastEl.style.opacity = '0'; }, 2600);
+  } catch (e) { }
+}
+function gpRumble(ms, strong, weak) {
+  // Vibración compatible con mandos PS4/PS5 (DualShock / DualSense) y Xbox: prueba cada vía de la API en orden.
+  try {
+    const p = gpPad; if (!p) return;
+    ms = Math.max(ms, 240); strong = Math.min(1, strong + 0.25); weak = Math.min(1, weak + 0.35);   // los motores del PS5 necesitan más pulso para notarse
+    const va = p.vibrationActuator;
+    if (va && va.playEffect) {
+      const fx = (va.effects && va.effects.length) ? va.effects : ['dual-rumble'];
+      const type = fx.indexOf('dual-rumble') >= 0 ? 'dual-rumble' : fx[0];
+      const prm = type === 'dual-rumble' ? { startDelay: 0, duration: ms, weakMagnitude: weak, strongMagnitude: strong } : { startDelay: 0, duration: ms, magnitude: strong };
+      const r = va.playEffect(type, prm);
+      if (r && r.catch) r.catch(() => { try { if (va.pulse) va.pulse(strong, ms); } catch (e) { } });
+      return;
+    }
+    if (va && va.pulse) { va.pulse(strong, ms); return; }
+    const h = p.hapticActuators && p.hapticActuators[0];   // Firefox / navegadores viejos
+    if (h && h.pulse) h.pulse(strong, ms);
+  } catch (e) { }
+}
+function gpStick(v) {   // zona muerta + curva suave cerca del centro (más precisión fina)
+  const a = Math.abs(v), dz = 0.12; if (a <= dz) return 0;
+  const n = Math.min(1, (a - dz) / (1 - dz)); return Math.sign(v) * Math.pow(n, 1.35);
+}
+function gpTrig(b) { const v = b ? (typeof b === 'object' ? b.value : (b ? 1 : 0)) : 0; return v < 0.05 ? 0 : Math.min(1, (v - 0.05) / 0.95); }
+function gpRacing() { return (S.mode === 'race' || S.mode === 'countdown') && !S.pm && !S.optionsOpen && !S.rk && !S.mpr; }
+function gpPoll() {
+  let pad = null;
+  try { const l = navigator.getGamepads ? navigator.getGamepads() : []; for (const p of l) if (p && p.connected) { pad = p; break; } } catch (e) { }
+  gpPad = pad;
+  if (!pad) { if (GP.on) { GP.on = false; GP.steer = GP.gas = GP.brake = 0; } return; }
+  const b = pad.buttons || [], ax = pad.axes || [];
+  const down = i => !!(b[i] && (typeof b[i] === 'object' ? b[i].pressed : b[i]));
+  const edge = i => down(i) && !gpPrev[i];
+  const racing = gpRacing();
+  if (!GP.on) { GP.on = true; GP.id = pad.id || ''; }
+  // --- conducción analógica ---
+  if (racing && !keyCapture) {
+    let st = gpStick(ax[0] || 0);
+    if (st === 0) st = (down(15) ? 1 : 0) - (down(14) ? 1 : 0);   // cruceta como dirección digital
+    GP.steer = clamp(st, -1, 1);
+    GP.gas = Math.max(gpTrig(b[7]), down(0) ? 1 : 0);
+    GP.brake = Math.max(gpTrig(b[6]), down(1) ? 1 : 0);
+    if (edge(5)) keySim(KEY_BINDS.shiftUp[0]);
+    if (edge(4)) keySim(KEY_BINDS.shiftDown[0]);
+    if (edge(3)) keySim(KEY_BINDS.camera[0]);
+    if (edge(9)) keySim(KEY_BINDS.pause[0]);
+    if (edge(2)) keySim(KEY_BINDS.hold[0]); else if (!down(2) && gpPrev[2]) keyUpSim(KEY_BINDS.hold[0]);
+  } else {
+    GP.steer = GP.gas = GP.brake = 0;
+    if (gpPrev[2] && !down(2)) keyUpSim(KEY_BINDS.hold[0]);
+    // --- navegación de menús ---
+    if (!keyCapture) {
+      let dir = '';
+      const x = ax[0] || 0, y = ax[1] || 0;
+      if (down(12) || y < -0.6) dir = 'ArrowUp'; else if (down(13) || y > 0.6) dir = 'ArrowDown';
+      else if (down(14) || x < -0.6) dir = 'ArrowLeft'; else if (down(15) || x > 0.6) dir = 'ArrowRight';
+      if (!dir) gpRep.dir = '';
+      else if (dir !== gpRep.dir) { gpRep.dir = dir; gpRep.t = performance.now() + 380; gpRep.n = 0; keySim(dir); }
+      else if (performance.now() >= gpRep.t) { gpRep.t = performance.now() + 130; keySim(dir); }
+      if (edge(0)) keySim('Enter');
+      if (edge(9)) keySim(S.pm ? KEY_BINDS.pause[0] : 'Enter');
+      if (edge(1) || edge(8)) keySim('Escape');
+    }
+  }
+  gpPrev = b.map((_, i) => down(i));
+}
+window.addEventListener('gamepadconnected', e => { gpToast('CONTROLLER CONNECTED'); });
+window.addEventListener('gamepaddisconnected', e => {
+  gpToast('CONTROLLER DISCONNECTED'); GP.on = false; GP.steer = GP.gas = GP.brake = 0;
+  if (gpRacing() && !S.mp) setPause(true);
+});
 $('tCam').addEventListener('click', () => keySim(KEY_BINDS.camera[0]));
 $('tPause').addEventListener('click', () => keySim(KEY_BINDS.pause[0]));
 $('tBackBtn').addEventListener('click', () => keySim('Escape'));
@@ -6720,6 +7165,7 @@ function frame(now) {
   const cap = document.hasFocus() ? PERF.fps : Math.min(20, PERF.fps);
   if (now - lastDraw < 1000 / cap - 2.5) return;
   lastDraw = now;
+  gpPoll();
   const dt = Math.min(0.25, (now - last) / 1000 || 0); last = now; accT += dt;
   const STEP = 1 / 60;
   while (accT >= STEP) { step(STEP); accT -= STEP; }
