@@ -1046,7 +1046,7 @@ function selectRaceCamera(view) {
   S.view = view;
   applyView();
 }
-const S = { mode: 'menu', paused: false, trans: 'auto', view: 1, muted: false, cd: 0, t: 0, finT: 0, finLane: null, finCruise: 0, go: 0, introT: 0, resultPlace: 20, demoT: 0, sel: false, holdFov: null, curve: null, cs: null, course: 0 };
+const S = { mode: 'menu', paused: false, trans: 'auto', view: 1, muted: false, cd: 0, t: 0, finT: 0, finLane: null, finCruise: 0, go: 0, introT: 0, resultPlace: 20, demoT: 0, postGoalTitle: false, postRaceSilent: false, sel: false, holdFov: null, curve: null, cs: null, course: 0 };
 const P = {};
 const DEMO = { k: -1, cyc: -1, anchor: null, rival: null, away: null };
 let cars = [], msgs = [], finCount = 0, raceT = 0, bestRace = Infinity, demoCar = null;
@@ -1121,7 +1121,7 @@ function voiceStop() {
   applyVol();
 }
 function voiceSay(key) {
-  if (S.muted || S.vol <= 0) return;
+  if (S.muted || S.postRaceSilent || S.vol <= 0) return;
   const clip = VOICE_CLIPS[key]; if (!clip) return;
   if (voiceActive) {
     try { voiceActive.pause(); voiceActive.currentTime = 0; } catch (e) { }
@@ -1143,11 +1143,13 @@ function initAudio() {
     if (A.c) { A.c.resume(); return; }
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
     const c = new AC(); A.c = c;
-    A.master = c.createGain(); A.master.gain.value = S.muted ? 0 : 0.5 * S.vol;
+    A.master = c.createGain(); A.master.gain.value = (S.muted || S.postRaceSilent) ? 0 : 0.5 * S.vol;
     const limiter = c.createDynamicsCompressor();
     limiter.threshold.value = -14; limiter.knee.value = 12;
     limiter.ratio.value = 5; limiter.attack.value = 0.006; limiter.release.value = 0.16;
     A.master.connect(limiter); limiter.connect(c.destination);
+    A.carBus = c.createGain(); A.carBus.gain.value = 1;
+    A.carBus.connect(A.master);
 
     // Eight-cylinder-inspired exhaust pulses: layered harmonics, no square-wave whistle.
     const real = new Float32Array(17), imag = new Float32Array(17);
@@ -1166,7 +1168,7 @@ function initAudio() {
     }
     A.drive.curve = curve; A.drive.oversample = '2x';
     A.filt = c.createBiquadFilter(); A.filt.type = 'lowpass'; A.filt.frequency.value = 690; A.filt.Q.value = 0.35;
-    A.eg.connect(A.drive); A.drive.connect(A.filt); A.filt.connect(A.master);
+    A.eg.connect(A.drive); A.drive.connect(A.filt); A.filt.connect(A.carBus);
 
     A.o1 = c.createOscillator(); A.o1.setPeriodicWave(wave);
     A.o2 = c.createOscillator(); A.o2.setPeriodicWave(wave);
@@ -1185,21 +1187,35 @@ function initAudio() {
     A.ns = c.createBufferSource(); A.ns.buffer = buf; A.ns.loop = true;
     A.intake = c.createBiquadFilter(); A.intake.type = 'bandpass'; A.intake.frequency.value = 750; A.intake.Q.value = 0.55;
     A.ig = c.createGain(); A.ig.gain.value = 0;
-    A.ns.connect(A.intake); A.intake.connect(A.ig); A.ig.connect(A.master);
+    A.ns.connect(A.intake); A.intake.connect(A.ig); A.ig.connect(A.carBus);
     A.scrape = c.createBiquadFilter(); A.scrape.type = 'bandpass'; A.scrape.frequency.value = 1050; A.scrape.Q.value = 0.65;
     A.ng = c.createGain(); A.ng.gain.value = 0;
-    A.ns.connect(A.scrape); A.scrape.connect(A.ng); A.ng.connect(A.master);
+    A.ns.connect(A.scrape); A.scrape.connect(A.ng); A.ng.connect(A.carBus);
     A.ns.start();
   } catch (e) { console.warn('Sonido no disponible:', e); A.c = null; }
 }
-function beep(f, d, type, vol) {
+function beep(f, d, type, vol, output) {
   if (!A.c) return;
   try {
     const o = A.c.createOscillator(), g = A.c.createGain(), t = A.c.currentTime;
     o.type = type || 'square'; o.frequency.value = f;
     g.gain.setValueAtTime(vol || 0.12, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-    o.connect(g); g.connect(A.master); o.start(t); o.stop(t + d + 0.02);
+    o.connect(g); g.connect(output || A.master); o.start(t); o.stop(t + d + 0.02);
   } catch (e) { }
+}
+
+// Tras GOAL se silencian TODOS los sonidos originados por los coches, sin
+// interferir con música, anunciador, GOAL ni interfaz. Las físicas NO cambian.
+function carSoundsEnabled() {
+  return S.mode !== 'finish' && S.mode !== 'timeout' && !(S.mp && P.finished);
+}
+function silenceCarSounds() {
+  if (!A.c || !A.carBus) return;
+  try { A.carBus.gain.setTargetAtTime(0, A.c.currentTime, 0.012); } catch (e) { }
+}
+function carBeep(f, d, type, vol) {
+  if (!carSoundsEnabled()) return;
+  beep(f, d, type, vol, A.carBus || A.master);
 }
 
 /* Sonido de confirmación al elegir pista / transmisión (estilo Daytona USA): barrido de aire + acorde ascendente */
@@ -1218,13 +1234,16 @@ function sfxSelect() {
   [[523, 0.0], [784, 0.07], [1047, 0.14], [1568, 0.21]].forEach(a => setTimeout(() => beep(a[0], 0.28, 'square', 0.06), a[1] * 1000));
 }
 function thump(v) {
-  if (!A.c) return;
+  if (!A.c || !carSoundsEnabled()) return;
   try { const t = A.c.currentTime; A.ng.gain.cancelScheduledValues(t); A.ng.gain.setValueAtTime(v || 0.5, t); A.ng.gain.exponentialRampToValueAtTime(0.02, t + 0.3); } catch (e) { }
 }
 function audioTick(active) {
   if (!A.c) return;
   try {
     const t = A.c.currentTime;
+    const audibleCars = carSoundsEnabled();
+    if (A.carBus) A.carBus.gain.setTargetAtTime(audibleCars ? 1 : 0, t, 0.012);
+    active = !!active && audibleCars;
     const rpm = clamp(P.rpm, 0.10, 1.10);
     // Responds to throttle, gear shifts and engine braking without piercing high frequencies.
     const hz = 48 + 120 * rpm;
@@ -1243,12 +1262,19 @@ function audioTick(active) {
 S.vol = 0.6;
 try { const savedVol = localStorage.getItem('cabVol'); if (savedVol !== null) { const v = parseFloat(savedVol); if (v >= 0 && v <= 1) S.vol = v; } S.muted = localStorage.getItem('cabMuted') === '1'; } catch (e) { }
 function applyVol() {
-  try { if (typeof MUSIC !== 'undefined' && MUSIC) MUSIC.volume = 0.4 * S.vol; if (typeof SELMUS !== 'undefined' && SELMUS) SELMUS.volume = 0.45 * S.vol; if (voiceActive) voiceActive.volume = Math.min(1, S.vol * VOICE_GAIN); } catch (e) { }
-  if (A.c) A.master.gain.setTargetAtTime(S.muted ? 0 : 0.5 * S.vol, A.c.currentTime, 0.02);
+  // S.postRaceSilent no altera la configuración SOUND: solo silencia el
+  // regreso a CABROTONA USA y su demo, incluso si se cambia el volumen.
+  const quiet = S.muted || S.postRaceSilent;
+  try {
+    if (typeof MUSIC !== 'undefined' && MUSIC) { MUSIC.volume = 0.4 * S.vol; MUSIC.muted = quiet; }
+    if (typeof SELMUS !== 'undefined' && SELMUS) { SELMUS.volume = 0.45 * S.vol; SELMUS.muted = quiet; }
+    if (voiceActive) voiceActive.volume = quiet ? 0 : Math.min(1, S.vol * VOICE_GAIN);
+  } catch (e) { }
+  if (A.c) A.master.gain.setTargetAtTime(quiet ? 0 : 0.5 * S.vol, A.c.currentTime, 0.02);
 }
 function setVol(v) { S.vol = Math.max(0, Math.min(1, v)); try { localStorage.setItem('cabVol', String(S.vol)); } catch (e) { } applyVol(); }
 function setMuted(m) {
-  S.muted = m; if (m) voiceStop(); if (typeof MUSIC !== 'undefined' && MUSIC) MUSIC.muted = m; if (typeof SELMUS !== 'undefined' && SELMUS) SELMUS.muted = m;
+  S.muted = m; if (m) voiceStop(); if (typeof MUSIC !== 'undefined' && MUSIC) MUSIC.muted = m || S.postRaceSilent; if (typeof SELMUS !== 'undefined' && SELMUS) SELMUS.muted = m || S.postRaceSilent;
   try { localStorage.setItem('cabMuted', m ? '1' : '0'); } catch (e) { }
   $('muteBtn').textContent = m ? 'OFF' : 'ON';
   $('muteBtn').setAttribute('aria-pressed', m ? 'true' : 'false');
@@ -1301,7 +1327,7 @@ function wallHit(into, sgn) {
   P.v = Math.max(0, P.v * (1 - clamp(into * 0.022, 0.1, 0.5)));    // el golpe frena el auto
   P.sv = -sgn * clamp(into * 0.45, 1.8, 6);                         // rebota apenas hacia afuera del muro
   P.recoil = clamp(into * 0.75, 3, 11); P.recoilT = 0.22;          // y se va un toque hacia atrás (sin trompo)
-  thump(clamp(0.3 + into * 0.03, 0.3, 0.75)); beep(130, 0.12, 'square', 0.09);
+  thump(clamp(0.3 + into * 0.03, 0.3, 0.75)); carBeep(130, 0.12, 'square', 0.09);
   if (playerMesh) { const b = playerMesh.b; for (let i = 0; i < 4; i++) spawnPart(b[0] + b[9] * 2.2 - b[3] * sgn, b[1] + 0.5 + b[10] * 2.2 - b[4] * sgn, b[2] + b[11] * 2.2 - b[5] * sgn, true); }
 }
 /* Vuelco Daytona: el video muestra un primer giro aéreo, una breve
@@ -1415,7 +1441,7 @@ function tumbleStart(st, kind) {
     }
     if (kind === 'flip') registerDamage(.54, Math.sign(P.d) || 1);
     thump(kind === 'flip' ? .9 : .7);
-    beep(kind === 'flip' ? 120 : 160, .45, 'sawtooth', .15);
+    carBeep(kind === 'flip' ? 120 : 160, .45, 'sawtooth', .15);
   }
 }
 function advance(st, dt) {
@@ -1793,16 +1819,18 @@ function cpuContact(c, dt) {
   if (!(P.sideCD > 0)) {
     P.sideCD = 0.28;
     thump(0.35);
-    beep(155, 0.10, 'square', 0.07);
+    carBeep(155, 0.10, 'square', 0.07);
   }
   return true;
 }
 function carContacts(dt) {
-  if (S.mode !== 'race' || P.tumble > 0) return;
+  const soloGoalDriving = !S.mp && S.mode === 'finish' && S.endGoal && S.finT < SOLO_END_RES0;
+  if ((S.mode !== 'race' && !soloGoalDriving) || P.tumble > 0) return;
   for (const c of cars) {
     if (!c.run || c.unused) continue;
     if (S.mp && c.cpu) { cpuContact(c, dt); continue; }
-    if (P.inv > 0) continue;
+    // La protección visual del final no puede convertir al auto en fantasma.
+    if (P.inv > 0 && !soloGoalDriving) continue;
     if (S.mp && c.remote) {
       // En v32 las colisiones entre jugadores las resuelve SOLO el servidor.
       // Un navegador no puede empujar unilateralmente al auto del otro.
@@ -1823,7 +1851,7 @@ function carContacts(dt) {
         else { P.v = Math.min(MAXV * 1.2, P.v + j + boost + 2); c.v = Math.max(0, c.v - j); }
         // si te pegan por atrás: solo te impulsan hacia adelante (sin trompo ni desvío)
         if (!rearIsP) P.crash = Math.max(P.crash, Math.min(0.5, 0.2 + rel * 0.012));
-        if (!(P.sideCD > 0)) { P.sideCD = 0.25; thump(Math.min(0.85, 0.35 + rel * 0.02)); beep(rearIsP ? 150 : 190, 0.12, 'square', 0.1); }
+        if (!(P.sideCD > 0)) { P.sideCD = 0.25; thump(Math.min(0.85, 0.35 + rel * 0.02)); carBeep(rearIsP ? 150 : 190, 0.12, 'square', 0.1); }
       }
     } else {
       /* roce de costado: el otro te lleva en su dirección */
@@ -1834,7 +1862,7 @@ function carContacts(dt) {
         c.d -= sg * over; c.lv = (c.lv || 0) - sg * Math.min(5, 1.5 + pAppr * 0.8);
         if (!S.mp) { c.sv = -sg * Math.min(12, 6.5 + pAppr * 1.6); c.shoveT = 1.2; }   // si lo llevás contra el muro, vuelca
         P.sv = (P.sv || 0) * 0.5; P.v *= 1 - 0.1 * dt;
-        if (!(P.sideCD > 0)) { P.sideCD = 0.3; thump(0.25); beep(170, 0.08, 'square', 0.06); }
+        if (!(P.sideCD > 0)) { P.sideCD = 0.3; thump(0.25); carBeep(170, 0.08, 'square', 0.06); }
         continue;
       }
       P.d += sg * over * 0.6; c.d -= sg * over * 0.4;
@@ -1842,7 +1870,7 @@ function carContacts(dt) {
       const push = Math.min(8, Math.max(0, closing) * (1 + CONTACT_E) / 2 + 2.2 + Math.abs(c.lv || 0) * 0.5);
       if ((P.sv || 0) * sg < push) P.sv = sg * push;
       P.v *= 1 - 0.35 * dt; P.shoveT = 1.6; P.wallT = Math.max(P.wallT, 0.12);
-      if (!(P.sideCD > 0)) { P.sideCD = 0.3; if (P.psi * sg < 0.4) P.psi += sg * 0.16; thump(0.35); beep(170, 0.1, 'square', 0.08); }
+      if (!(P.sideCD > 0)) { P.sideCD = 0.3; if (P.psi * sg < 0.4) P.psi += sg * 0.16; thump(0.35); carBeep(170, 0.1, 'square', 0.08); }
       if (c.v > P.v) c.v = Math.max(P.v * 0.98, c.v - 20 * dt);   // el otro se frena un poco al rozar
     }
   }
@@ -1907,10 +1935,11 @@ function beginSoloFinish(place, completed = true) {
     // terminar apuntando al centro de la pista, nunca al muro de salida.
     S.finLane = inPitAtGoal ? PIT.lane : P.d;
     if (inPitAtGoal) P.pitBypass = true;
-    // El final respeta la velocidad de llegada: no aplica un objetivo mínimo
-    // ni acelera artificialmente hasta la velocidad máxima tras cruzar GOAL.
-    S.finCruise = P.v;
-    S.finLastSpeed = P.v; // Límite descendente independiente del piloto automático y la física.
+    // Tras GOAL, el piloto automático sigue doblando y acelera hasta la
+    // velocidad máxima natural del vehículo, sin oscilaciones en el tope.
+    P.gear = 3; // También en transmisión manual: la conducción final es automática.
+    S.finCruise = gearMax(3);
+    S.finLastSpeed = null;
     beep(880, 0.15); setTimeout(() => beep(1320, 0.3), 160);
   } else {
     // Igual al index adjunto: el tiempo agotado congela carrera y cámara;
@@ -1920,6 +1949,7 @@ function beginSoloFinish(place, completed = true) {
     P.acc = 0; P.thr = 0; P.braking = false;
     for (const c of cars) { c.v = 0; c.run = false; c.ddt = 0; c.lv = 0; }
   }
+  silenceCarSounds();
   if (A.c) { const now = A.c.currentTime;
     A.eg.gain.setTargetAtTime(0, now, .04);
     A.ig.gain.setTargetAtTime(0, now, .04);
@@ -1927,19 +1957,23 @@ function beginSoloFinish(place, completed = true) {
   }
 }
 
-// En solitario el GOAL puede continuar con piloto de carril, daños o vuelco.
-// Ningún sistema debe volver a elevar (ni sostener) la velocidad después de meta.
-// El límite se aplica DESPUÉS de la simulación, para incluir la salida de boxes.
-function coastAfterSoloGoal(dt) {
+// El control de cierre mantiene el acelerador abierto y el volante en el
+// piloto automático. La pequeña ayuda longitudinal compensa la resistencia
+// de las curvas cuando el motor está cerca del corte: evita el 281/282 km/h
+// que alternaba indefinidamente sin llegar a la velocidad máxima.
+// Se aplica DESPUÉS de la física: un choque sigue quitando velocidad y el
+// coche vuelve a acelerar gradualmente (nunca se teletransporta).
+function accelerateAfterSoloGoal(dt) {
   if (S.mp || S.mode !== 'finish' || !S.endGoal) return;
-  const prev = Number.isFinite(S.finLastSpeed) ? S.finLastSpeed : P.v;
-  const limit = Math.max(0, prev - ACC * .35 * dt);
-  P.v = Math.max(0, Math.min(P.v, limit));
-  S.finLastSpeed = P.v;
-  P.thr = 0;
-  if (P.v <= .001) { P.v = 0; P.acc = 0; }
-  else P.acc = Math.min(P.acc || 0, -ACC * .35);
-  P.rpm = Math.min(P.rpm || 0, P.v / gearMax(P.gear));
+  const top = gearMax(3);
+  P.gear = 3;
+  if (P.v < top) P.v = Math.min(top, P.v + ACC * ST.acc * 0.32 * dt);
+  // Una vez alcanzado el límite, fijarlo exactamente, sin ir y venir
+  // entre dos valores enteros del velocímetro por el redondeo.
+  if (P.v >= top - 0.10) P.v = top;
+  P.thr = 1;
+  P.braking = false;
+  P.rpm = clamp(P.v / top, 0.18, 1);
 }
 
 function startMpCine(place) {
@@ -1993,6 +2027,7 @@ function beginFinish(place, completed = true) {
     P.acc = 0; P.thr = 0; P.rpm = 0; P.braking = false;
   }
   S.te = null; msgs = []; P.braking = false;
+  silenceCarSounds();
   if (A.c) { const t = A.c.currentTime;
     A.eg.gain.setTargetAtTime(0, t, 0.045);
     A.ig.gain.setTargetAtTime(0, t, 0.045);
@@ -2027,7 +2062,8 @@ const RK_NAME_TIME = 15, RK_PAGE_TIME = 6, RK_INTRO = 32;   // el ranking aparec
 // Final de Arcade: si el tiempo entra en el ranking se pide el nombre; si no, vuelve a la demo.
 function soloEnd() {
   if (S.rk) return;
-  if (!S.mp && !S.freeRun && S.mode === 'finish' && P.finished && S.finalT > 0 && rkQualifies(S.finalT)) rkOpenName(); else if (!S.mp && S.freeRun && S.mode === 'finish') S.rk = { mode: 'title', t: 0 }; else showMenu();
+  if (!S.mp && !S.freeRun && S.mode === 'finish' && P.finished && S.finalT > 0 && rkQualifies(S.finalT)) rkOpenName();
+  else showPostRaceTitle();
 }
 function rkBuildBg() {
   // Fondo de Name Entry: degradé azul + el logo original CABROTONA USA (de la pantalla de título) pasado a plateado translúcido, como el logo de SEGA de la referencia.
@@ -2067,7 +2103,7 @@ function rkOpenName() {
 function rkOpenView() { if (!RK) rkLoad(); S.rk = { mode: 'view', t: 0, filt: 0, hit: [] }; beep(880, 0.06, 'square', 0.05); }
 function rkClose() {
   const k = S.rk; S.rk = null;
-  if (k && k.mode !== 'view') showMenu();
+  if (k && k.mode !== 'view') showPostRaceTitle();
 }
 function rkAdd(ch) {
   const k = S.rk; if (!k || k.mode !== 'name' || k.name.length >= 3) return;
@@ -2091,7 +2127,7 @@ function rkTick(dt) {
   k.t += dt;
   if (k.mode === 'name' && k.out !== undefined) {
     k.out += dt;
-    if (k.out >= RK_OUT + RK_HOLD) S.rk = { mode: 'title', t: 0 };
+    if (k.out >= RK_OUT + RK_HOLD) showPostRaceTitle();
     return;
   }
   if (k.mode === 'name') {
@@ -2100,10 +2136,8 @@ function rkTick(dt) {
     if (k.fin > 0) { k.fin -= dt; if (k.fin <= 0) { rkFinish(); return; } }
     if (k.left <= 0) rkFinish();
   }
-  // El título POST-CARRERA es una etapa temporizada de la cinemática.
-  // A los 6,5 segundos pasa solo a las tomas de la demo, sin exigir START.
-  // El SCOREBOARD abierto manualmente sigue a cargo del jugador.
-  if (k.mode === 'title' && k.t >= RK_TITLE) { rkClose(); return; }
+  // El título postcarrera ya no es una pantalla de ranking independiente:
+  // se dibuja por la ruta original del menú, con PRESS START y la pista detrás.
 }
 function rkKey(e) {
   const k = S.rk; if (!k) return;
@@ -2282,12 +2316,6 @@ function drawNameEntry() {
 function drawRk() {
   const k = S.rk;
   if (k.mode === 'name') drawNameEntry();
-  else if (k.mode === 'title') {
-    drawTitleScreen(k.t);
-    // Breve fundido antes de volver a las cámaras de la demo.
-    const fade = clamp((k.t - (RK_TITLE - 0.45)) / 0.45, 0, 1);
-    if (fade > 0) { hx.fillStyle = `rgba(0,0,0,${fade})`; hx.fillRect(0, 0, HW, HH); }
-  }
   else if (k.mode === 'view') drawScoreboard();
   else drawRankBoard(k.page, k.t, k.hi, 'BEGINNER');
 }
@@ -2378,7 +2406,7 @@ function endingTick(dt) {
     d = lerp(d0, side * (WALL - 5.2), cSm(t, tb, tb + 2.25));
     phi = side * (1.12 * skid * (1 - settle) + 0.05 * settle);
     acc = t > tb && t < tb + 3.15 ? -38 : 0;
-    if (!c.event && t >= tb + 0.15) { c.event = true; thump(0.25); beep(520, 0.7, 'sawtooth', 0.04); }
+    if (!c.event && t >= tb + 0.15) { c.event = true; thump(0.25); carBeep(520, 0.7, 'sawtooth', 0.04); }
   } else if (c.place === 3) {
     // Se tira contra la valla, rebota y se arrastra unos metros.
     const tI = tb + CINE_IMPACT[3], hit = clamp((t - tb) / CINE_IMPACT[3], 0, 1);
@@ -2445,7 +2473,7 @@ function sim(dt) {
       return;
     }
     S.finT += dt;
-    if (S.finT + SOLO_TO_OFF >= SOLO_END_TOTAL) showMenu();
+    if (S.finT + SOLO_TO_OFF >= SOLO_END_TOTAL) showPostRaceTitle();
     return;
   }
   if (S.mode === 'finish' && S.mp) { endingTick(dt); return; }
@@ -2453,7 +2481,7 @@ function sim(dt) {
     // El reloj del GOAL sigue corriendo mientras el auto completa el vuelco.
     S.finT += dt;
     const rollDone = continueEndingRoll(dt);
-    coastAfterSoloGoal(dt);
+    accelerateAfterSoloGoal(dt);
     if (rollDone) {
       S.finishRollPending = false;
       S.finCamStart = S.finT; // La órbita empieza desde cero, sin saltar a mitad del plano.
@@ -2483,22 +2511,22 @@ function sim(dt) {
   let inp;
   if (racing) {
     if (S.mp && P.finished) {
-      // Entre la meta y el resultado oficial: el coche rueda por inercia.
-      // Antes el autopiloto aceleraba hasta 46 m/s aunque llegara más lento.
-      inp = autoDrive(0, P.d); inp.gas = false; inp.brake = false;
+      // GOAL online: el coche continúa acelerando y dobla automáticamente
+      // hasta la llegada del resultado oficial (que tiene prioridad).
+      inp = mpPostGoalInput();
     } else inp = readInput();
   }
   else {
     S.finT += dt;
     if (S.mode === 'finish') {
       if (S.finLane == null) S.finLane = P.d;
-      // Sólo dirigimos el auto tras GOAL. El acelerador queda suelto;
-      // la propia física lo hace perder velocidad con naturalidad.
+      // Tras GOAL el piloto automático toma volante y acelerador;
+      // el coche continúa corriendo, no queda deslizándose por inercia.
       if (PIT.on && !S.mp && P.d > PIT.sep &&
           pitRel(P.dist) >= PIT.ex0 + 10 && pitRel(P.dist) <= PIT.ex1 + 45)
         S.finLane = 10.5;
-      inp = autoDrive(0, S.finLane);
-      inp.gas = false; inp.brake = false;
+      inp = autoDrive(gearMax(3), S.finLane);
+      inp.gas = true; inp.brake = false;
       // Desenlace visual: el ganador posa; segundo derrapa, tercero choca,
       // cuarto o inferior vuelca. No influye en el orden del servidor.
       const c = S.cine, t = S.finT;
@@ -2517,26 +2545,18 @@ function sim(dt) {
   if (racing && P.pit) { inp = pitDrive(dt); P.v = P.pit.vNew; }   // en boxes el auto va solo; el juego sigue corriendo
   else inp = pitBypassControl(dt, inp); // pit cerrado: giro físico de regreso a pista, incluso al terminar en GOAL
   if (S.mode === 'finish' && !S.mp) {
-    // La salida del pit también puede controlar el volante, pero nunca debe
-    // pisar el acelerador de nuevo ni dejar el motor a fondo.
-    inp.gas = false;
+    // Aunque la salida de boxes corrija el volante, nunca toma el control
+    // del acelerador: el auto sigue a fondo hasta que aparece RESULTS.
+    inp.gas = true;
     inp.brake = false;
-    // Frenada gradual de llegada a RESULTS: sin detenerse de golpe en el
-    // último cuadro ni alterar la animación de GOAL o la cámara.
-    const remaining = Math.max(1 / 60, SOLO_END_RES0 - S.finT);
-    const naturalDecel = ACC * 0.35;
-    const requiredDecel = P.v / remaining;
-    if (S.finT > 2.3 && P.v > 0.7 && requiredDecel > naturalDecel) {
-      inp.brake = true;
-      inp.brakeA = clamp(requiredDecel / BRAKE, 0.10, 0.80);
-    }
+    inp.brakeA = 0;
   }
   P.prevDist = P.dist; P.prevD = P.d;
   stepPlayer(dt, inp);
   if (P.pit) pitAfter(dt); else if (racing) pitEnter(dt);
   pitTick(dt);
-  // GOAL: conservar el impulso, pero siempre desacelerando de forma continua.
-  coastAfterSoloGoal(dt);
+  // GOAL: el piloto automático sigue acelerando hasta la velocidad final.
+  accelerateAfterSoloGoal(dt);
   // Efectos físicos para la escena final, usando los mismos mecanismos del juego.
   if (S.mode === 'finish' && S.cine) {
     const c = S.cine, t = S.finT;
@@ -2576,7 +2596,8 @@ function sim(dt) {
         if (S.mp) {
           // El servidor espera 2 segundos desde la victoria y recién entonces
           // activa la cinematográfica de todos con la posición definitiva.
-          P.finished = true; P.finAt = mpNow(); if (NET.firstFin == null || P.finAt < NET.firstFin) NET.firstFin = P.finAt;
+          P.finished = true; P.finAt = mpNow(); P.gear = 3; S.finLane = P.d;
+          if (NET.firstFin == null || P.finAt < NET.firstFin) NET.firstFin = P.finAt;
           beep(880, 0.15); setTimeout(() => beep(1320, 0.3), 160);
         } else beginSoloFinish(++finCount, true);
       } else {
@@ -2622,7 +2643,17 @@ function step(dt) {
     // The background demo may loop, but must NEVER dismiss SCOREBOARD or OPTIONS.
     if (!S.rk && !S.optionsOpen) S.demoT += dt;
     mmUpdate(dt); lbUpdate(dt); csUpdate(dt); msUpdate(dt); gsUpdate(dt);
-    if (S.demoT >= DEMO_LEN && !S.rk && !S.optionsOpen) showMenu(S.sel);
+    // El título tras jugar usa los mismos 6,5 s del arcade y después
+    // corta a las cámaras de la demo (sin pantalla negra ni clic/Enter).
+    if (S.postGoalTitle && S.demoT >= TITLE_AT + RK_TITLE && !S.rk && !S.optionsOpen) {
+      // El título de regreso queda mudo, pero al volver a las cámaras del
+      // circuito recuperamos la canción y el resto del audio de la demo.
+      // Restaurar ANTES de showMenu(): esta función reinicia la pista en 0
+      // y llama musicStart(), que ahora puede reproducirla normalmente.
+      S.postRaceSilent = false;
+      applyVol(); // Mantiene el ajuste SOUND/mute elegido por el jugador.
+      showMenu(S.sel);
+    } else if (S.demoT >= DEMO_LEN && !S.rk && !S.optionsOpen) showMenu(S.sel);
   }
   for (const m of msgs) m.t -= dt;
   msgs = msgs.filter(m => m.t > 0);
@@ -5135,6 +5166,8 @@ function mpStart() {
 }
 const mpGrid = k => { const right = k % 2; return { d: right ? 3.75 : -10.9, dist: 24 - Math.floor(k / 2) * 18 + (right ? 6 : 0) }; };
 function startRaceMP(ord) {
+  S.postRaceSilent = false;
+  applyVol(); // Solo se recupera SOUND al comenzar una carrera nueva.
   if (S.optionsOpen) { S.optionsOpen=false; keyCapture=null; optionsReturnToGame=false; $('optionsPanel').hidden=true; }
   const me = mpMyPeer(), myK = Math.max(0, ord.indexOf(me)), info = {};
   NET.inputSeq = 0; NET.lastSend = 0; NET.lastHit = 0; NET.lastWall = 0;
@@ -5282,6 +5315,12 @@ function mpUpdateRemotes(dt) {
     }
   }
 }
+// Cliente y servidor usan el mismo acelerador y la misma dirección automática
+// tras GOAL. No se mezcla un coche local acelerando con un snapshot frenando.
+function mpPostGoalInput() {
+  const inp = autoDrive(gearMax(3), S.finLane == null ? P.d : S.finLane);
+  return { gas: true, brake: false, steer: inp.steer };
+}
 // v32: al servidor se envían CONTROLES, nunca posiciones.
 // Predicción local: el #41 reacciona en cada cuadro, el servidor simula
 // a 60 Hz y devuelve la pose única de todos los autos.
@@ -5290,11 +5329,9 @@ function mpSend() {
   const now = performance.now();
   if (now - NET.lastSend < 32) return; // ~30 Hz de inputs
   NET.lastSend = now;
-  // El servidor también debe soltar el acelerador al cruzar GOAL.
-  // Antes se enviaba readInput() aunque la física local ya iba por inercia:
-  // al mantener la tecla, el snapshot oficial volvía a acelerar y hacía
-  // oscilar el velocímetro (p. ej. 281/282 km/h).
-  const inp = P.finished ? { gas: false, brake: false, steer: 0 } : readInput();
+  // Tras la meta, enviar el mismo acelerador y volante automático de la
+  // simulación local; si el servidor recibe otro input, la velocidad oscila.
+  const inp = P.finished ? mpPostGoalInput() : readInput();
   try { NET.r.input({ rid: NET.state.rid, seq: ++NET.inputSeq,
     gas: !!inp.gas, brake: !!inp.brake, steer: clamp(inp.steer, -1, 1), gear: P.gear | 0 }); }
   catch (e) { if (!mpSend.warn) { mpSend.warn = true; console.warn('Input online', e); } }
@@ -5309,13 +5346,12 @@ function mpSend() {
 function mpProjectOwnPose(p, age) {
   const q = { dist: p[0], d: p[1], v: p[2], psi: p[3], phi: p[4] };
   if (age <= 0) return q;
-  // La extrapolación local tiene que predecir las MISMAS entradas neutras
-  // que enviamos al servidor tras GOAL. Si no, contradice el frenado real.
-  const inp = P.finished ? { gas: false, brake: false, steer: 0 } : readInput();
+  // La extrapolación predice la misma aceleración que enviamos al servidor.
+  const inp = P.finished ? mpPostGoalInput() : readInput();
   const gear = clamp(p[8] | 0, 0, 3);
   // El servidor envía la marcha confirmada, pero todavía no la posición exacta del volante;
   // tomamos la dirección local actual, que es la que el jugador está viendo.
-  const steer = P.finished ? 0 : P.steer;
+  const steer = P.finished ? inp.steer : P.steer;
   const n = Math.max(1, Math.ceil(age * 60)), dt = age / n;
   for (let i = 0; i < n; i++) {
     const f = frameAt(q.dist), k = f.k, rpm = q.v / gearMax(gear);
@@ -5398,7 +5434,7 @@ function mpReconcile(dt) {
     // Un mismo contacto confirmado por servidor se muestra una sola vez.
     const fresh = NET.lastHit > 0 || p[10] === 1;
     NET.lastHit = p[10];
-    if (fresh && !(P.sideCD > 0)) { P.crash = Math.max(P.crash, .16); P.sideCD = .27; thump(.36); beep(155, .09, 'square', .05); }
+    if (fresh && !(P.sideCD > 0)) { P.crash = Math.max(P.crash, .16); P.sideCD = .27; thump(.36); carBeep(155, .09, 'square', .05); }
     // p[11] marca un contacto con otro auto; NO es daño de capó.
   }
   // Solo la pared puede abollar el capó. El servidor confirma muros por separado
@@ -6455,6 +6491,8 @@ function render(dt) {
   drawHUD();
   if (S.pm) pmDraw(S.pm);
   if (S.mode === 'menu' && S.ms && R3.sel && !window.__no3d) { try { renderSelectCars(); } catch (e) { if (!renderSelectCars.err) { renderSelectCars.err = true; console.error(e); } } }
+  // GOAL: el auto sigue acelerando, pero los motores, ruedas y choques quedan mudos.
+  // En online P.finished silencia también la espera del resultado del servidor.
   audioTick(S.mode === 'race' || S.mode === 'countdown');
 }
 
@@ -6466,6 +6504,7 @@ const MUSIC = typeof Audio !== 'undefined' ? new Audio('data:audio/mpeg;base64,S
 let musicOn = false;
 function musicSync() {
   if (!MUSIC || !musicOn) return;
+  if (S.postRaceSilent) { MUSIC.pause(); return; }
   try {
     const dur = MUSIC.duration, t = S.demoT;
     if (isFinite(dur) && t >= dur - 0.2) return;   // la canción ya terminó en esta vuelta de la demo
@@ -6479,6 +6518,7 @@ if (SELMUS) { SELMUS.loop = true; SELMUS.preload = 'auto'; }
 let selMusicOn = false;
 function selMusicSync() {
   if (!SELMUS || !selMusicOn) return;
+  if (S.postRaceSilent) { SELMUS.pause(); return; }
   try { SELMUS.muted = S.muted; SELMUS.volume = 0.45 * S.vol; const pr = SELMUS.play(); if (pr && pr.catch) pr.catch(() => { }); } catch (e) { }
 }
 function selMusicStart() { selMusicOn = true; try { if (SELMUS) SELMUS.currentTime = 0; } catch (e) { } selMusicSync(); }
@@ -6535,7 +6575,7 @@ function showMenu(keepSel) {
   if (S.optionsOpen) { S.optionsOpen=false; keyCapture=null; optionsReturnToGame=false; $('optionsPanel').hidden=true; }
   voiceStop();
   const mpBack = !!(S.mp && NET.r); if (mpBack) keepSel = true;
-  LAPS = 4; S.mode = 'menu'; S.paused = false; msgs = []; S.te = null; S.finT = 0; S.cine = null; S.finishRollPending = false; S.finCamStart = 0; S.finLastSpeed = null; S.timeoutFinalFrame = 0; S.crashView = null; S.mpr = null; S.rk = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; S.resultPlace = 20; S.demoT = 0; S.sel = !!keepSel; if (!keepSel) { S.mm = null; S.cs = null; S.ms = null; S.gs = null; } repaintPlayer(S.trans); S.holdFov = null; resCache = null; DEMO.away = null; S.curve = null;
+  LAPS = 4; S.mode = 'menu'; S.paused = false; msgs = []; S.te = null; S.finT = 0; S.cine = null; S.finishRollPending = false; S.finCamStart = 0; S.finLastSpeed = null; S.timeoutFinalFrame = 0; S.crashView = null; S.mpr = null; S.rk = null; S.goalPh = false; NET.firstFin = null; P.finAt = null; S.introT = 0; S.resultPlace = 20; S.demoT = 0; S.postGoalTitle = false; S.sel = !!keepSel; if (!keepSel) { S.mm = null; S.cs = null; S.ms = null; S.gs = null; } repaintPlayer(S.trans); S.holdFov = null; resCache = null; DEMO.away = null; S.curve = null;
   if (document.body) document.body.dataset.menu = '1';
   resetPlayer(); makeCars(); finCount = 0; raceT = 0;
   // Restaurar los NPC originales cuando se vuelve de multiplayer al modo individual.
@@ -6557,9 +6597,35 @@ function showMenu(keepSel) {
   if (!keepSel) { selMusicStop(); musicStart(); }
   if (mpBack) mpBackToLobby();
 }
+// Al terminar una partida, usar LA MISMA pantalla CABROTONA USA de la intro:
+// título con llamas, PRESS START, fondo de demo real y sin fundido negro.
+// Pasados 6.5 segundos comienza automáticamente la cinemática de la pista.
+function showPostRaceTitle() {
+  // La transición al lobby online NO debe silenciar una partida posterior.
+  const onlineLobby = !!(S.mp && NET.r);
+  if (!onlineLobby) {
+    S.postRaceSilent = true;
+    voiceStop();
+    if (MUSIC) MUSIC.pause();
+    if (SELMUS) SELMUS.pause();
+    applyVol();
+    // Corte inmediato de todo WebAudio, incluidos beeps ya iniciados.
+    if (A.c && A.master) {
+      const t = A.c.currentTime;
+      A.master.gain.cancelScheduledValues(t);
+      A.master.gain.setValueAtTime(0, t);
+    }
+  }
+  showMenu();
+  if (onlineLobby) return;
+  S.postGoalTitle = true;
+  S.demoT = TITLE_AT; // Pantalla original con llamas y PRESS START.
+  S.introT = 0;
+  // Conservamos la demo visual; no iniciamos música ni efectos.
+}
 function openSelect() {
   if (S.mode !== 'menu' || S.sel) return;
-  S.sel = true; initAudio(); musicStop(); mmOpen();   // menú principal (sin música) → ARCADE MODE: circuito y después transmisión
+  S.sel = true; S.postGoalTitle = false; initAudio(); musicStop(); mmOpen();   // menú principal (sin música) → ARCADE MODE: circuito y después transmisión
 }
 function closeSelect() {
   if (S.mode !== 'menu' || !S.sel) return; voiceStop();
@@ -6567,6 +6633,8 @@ function closeSelect() {
   selMusicStop(); musicOn = true; musicSync();
 }
 function startRace() {
+  S.postRaceSilent = false;
+  applyVol(); // Restaurar sonido normal antes de la cuenta regresiva.
   if (S.optionsOpen) { S.optionsOpen=false; keyCapture=null; optionsReturnToGame=false; $('optionsPanel').hidden=true; }
   voiceStop();
   LAPS = 4; initAudio(); musicStop(); selMusicStop(); S.sel = false; S.mm = null; S.cs = null; S.ms = null; S.gs = null; repaintPlayer(S.trans); S.holdFov = null; resCache = null;
